@@ -16,6 +16,7 @@ from .errors import (
     ArkParameterError,
     ArkTimeoutError,
 )
+from .task_models import CreateTaskRequest
 from .transport import ArkTransport, UrllibArkTransport
 from .types import ArkHTTPResponse, ArkRequest, ArkResponse
 
@@ -44,6 +45,44 @@ class ArkClient:
     @property
     def config(self) -> ArkConfig:
         return self._config
+
+    # ------------------------------------------------------------------
+    # High-level task operations
+    # ------------------------------------------------------------------
+
+    def create_task(
+        self,
+        request: CreateTaskRequest,
+    ) -> str:
+        """Create a video generation task and return the task ID.
+
+        Args:
+            request: A :class:`CreateTaskRequest` describing the video to generate.
+
+        Returns:
+            The Ark task ID (e.g. ``cgt-xxxxxxxx``).
+
+        Raises:
+            ArkParameterError: If required fields are missing or values are invalid.
+            ArkAPIError: If the Ark API returns an error response.
+        """
+        # Fill in default model when caller left it blank
+        if not request.model or not request.model.strip():
+            request.model = self._config.default_model_id
+
+        payload = request.build()
+        response = self.request_tasks("POST", json=payload)
+        data = response.data
+
+        task_id: str | None = None
+        if isinstance(data, dict):
+            task_id = data.get("id")
+        if not task_id:
+            raise ArkAPIError(
+                "Ark create-task response missing 'id' field",
+                status_code=response.status_code,
+            )
+        return task_id
 
     def request_tasks(
         self,

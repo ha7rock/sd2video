@@ -11,6 +11,13 @@ from .errors import (
     ArkParameterError,
     ArkTimeoutError,
 )
+from .task_models import (
+    CreateTaskRequest,
+    audio_content,
+    image_content,
+    text_content,
+    video_content,
+)
 from .transport import ArkTransport, UrllibArkTransport
 from .types import ArkHTTPResponse, ArkRequest, ArkResponse
 
@@ -28,5 +35,10 @@ __all__ = [
     "ArkResponse",
     "ArkTimeoutError",
     "ArkTransport",
+    "CreateTaskRequest",
     "UrllibArkTransport",
+    "audio_content",
+    "image_content",
+    "text_content",
+    "video_content",
 ]
