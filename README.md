@@ -146,12 +146,21 @@ state = wf.delete(task_id, confirm=False)
 - 所有错误输出中的 API Key 会被自动替换为 `<redacted>`
 - 删除操作默认需要确认，防止误操作
 
+## 接入文档
+
+更完整的创建、查询、列表、删除、轮询、错误处理和 smoke test 说明见：
+
+```text
+docs/ark_video_api.md
+```
+
 ## 测试
 
 ```bash
 pip install -e .
-pip install pytest
-python -m pytest tests/ -v
+PYTHONPATH=src python3 -m unittest discover -s tests
+python3 -m unittest discover
+python3 -m compileall -q src tests
 ```
 
 CI 默认只跑 mock 测试，不依赖外网或真实 API Key。
