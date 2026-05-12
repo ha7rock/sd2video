@@ -390,8 +390,7 @@ function App(){
       if(e.key==="Escape"){setSelId(null);setPanel(null);}
       if((e.key==="Delete"||e.key==="Backspace")&&selId){
         e.preventDefault();
-        setNodes(ns=>ns.filter(n=>n.id!==selId));
-        setSelId(null);setPanel(null);
+        deleteNode(selId);
       }
     }
     function onKU(e){
@@ -548,23 +547,29 @@ function App(){
     const n=nodes.find(x=>x.id===id);if(!n)return false;
     if(n.status!=="generating"){window.alert("只有生成中的任务可以取消。");return false;}
     if(!window.confirm("确认取消这个生成任务？"))return false;
-    stopPolling(id);
     if(n.taskId){
       try{
         const task=await window.requestDeleteTask(n.taskId,{currentStatus:n.taskStatus||n.task_status||"running",config:backendConfig});
+        stopPolling(id);
         setNodes(ns=>ns.map(x=>x.id===id?{...x,...window.nodePatchFromTask(task),taskId:n.taskId,task_id:n.taskId}:x));
       }catch(err){
-        setNodes(ns=>ns.map(x=>x.id===id?{...x,status:"error",errorMessage:err?.message||"取消任务失败",error_message:err?.message||"取消任务失败"}:x));
+        const message=err?.message||"取消任务失败，任务仍在继续轮询。";
+        setNodes(ns=>ns.map(x=>x.id===id?{...x,errorMessage:message,error_message:message}:x));
+        return false;
       }
     }else{
+      stopPolling(id);
       setNodes(ns=>ns.map(x=>x.id===id?{...x,status:"cancelled",taskStatus:"cancelled",task_status:"cancelled",statusText:"已取消",progress:0,updatedAt:Date.now()}:x));
     }
     return true;
   }
   function deleteNode(id){
     const n=nodes.find(x=>x.id===id);if(!n)return false;
-    const msg=n.status==="generating"?"任务仍在生成中，删除会停止轮询并移除画布记录。确认删除？":"确认从画布删除这个任务记录？";
-    if(!window.confirm(msg))return false;
+    if(n.status==="generating"){
+      window.alert("任务仍在生成中。请先取消任务，取消成功后再删除记录。");
+      return false;
+    }
+    if(!window.confirm("确认从画布删除这个任务记录？"))return false;
     stopPolling(id);
     setNodes(ns=>ns.filter(x=>x.id!==id));
     setSelId(null);setPanel(null);
