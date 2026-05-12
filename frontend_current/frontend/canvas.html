@@ -1,0 +1,604 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>画布 · 视频创作</title>
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script type="text/babel" src="app-components.jsx"></script>
+<template id="__bundler_thumbnail" data-bg-color="#f1f1f1">
+<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"><rect x="20" y="28" width="60" height="44" rx="4" fill="none" stroke="#111" stroke-width="2"/><path d="M44 44l16 9-16 9z" fill="#111"/></svg>
+</template>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,'SF Pro Display',sans-serif;background:#e5e5e5;overflow:hidden;width:100vw;height:100vh}
+#root{width:100%;height:100%}
+input,textarea,button,select{font-family:inherit}
+::-webkit-scrollbar{width:4px}::-webkit-scrollbar-thumb{background:#d0d0d0;border-radius:2px}
+
+.topbar{position:fixed;top:0;left:0;right:0;height:48px;display:flex;align-items:center;justify-content:space-between;padding:0 16px;z-index:200;pointer-events:none}
+.topbar>*{pointer-events:all}
+.tb-left{display:flex;align-items:center;gap:8px}
+.tb-right{display:flex;align-items:center;gap:8px}
+.tb-title{font-size:13px;font-weight:500;color:#111;cursor:pointer;padding:4px 8px;border-radius:6px;transition:background .15s;display:flex;align-items:center;gap:4px}
+.tb-title:hover{background:rgba(0,0,0,.07)}
+.btn-black{background:#111;color:#fff;border:none;border-radius:20px;padding:6px 14px;font-size:13px;font-weight:500;cursor:pointer;display:flex;align-items:center;gap:5px;transition:opacity .15s}
+.btn-black:hover{opacity:.8}
+.btn-white{background:#fff;border:1px solid #ddd;border-radius:8px;padding:6px 14px;font-size:13px;font-weight:500;cursor:pointer;color:#111;transition:background .15s}
+.btn-white:hover{background:#f5f5f5}
+
+.toolbar{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#1c1c1c;border-radius:30px;padding:6px 10px;display:flex;align-items:center;gap:2px;z-index:200;box-shadow:0 4px 24px rgba(0,0,0,.25)}
+.tool-btn{width:36px;height:36px;border:none;border-radius:50%;background:transparent;color:rgba(255,255,255,.55);cursor:pointer;display:flex;align-items:center;justify-content:center;transition:background .15s,color .15s;position:relative}
+.tool-btn:hover{background:rgba(255,255,255,.12);color:#fff}
+.tool-btn.on{background:rgba(255,255,255,.18);color:#fff}
+.t-sep{width:1px;height:20px;background:rgba(255,255,255,.12);margin:0 4px}
+.t-tip{position:absolute;bottom:calc(100% + 8px);left:50%;transform:translateX(-50%);background:#111;color:#fff;font-size:10.5px;padding:3px 8px;border-radius:5px;white-space:nowrap;pointer-events:none;opacity:0;transition:opacity .1s}
+.tool-btn:hover .t-tip{opacity:1}
+
+.zoom-bar{position:fixed;bottom:20px;left:16px;background:#fff;border:1px solid #e0e0e0;border-radius:8px;display:flex;align-items:center;z-index:200;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.06)}
+.minimap{position:fixed;bottom:60px;left:16px;width:140px;height:96px;background:#fff;border:1px solid #e0e0e0;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,.06);z-index:200;overflow:hidden;cursor:crosshair}
+.mm-node{position:absolute;background:#999;border-radius:1px}
+.mm-node.sel{background:#111}
+.mm-vp{position:absolute;border:1.5px solid rgba(17,17,17,.55);background:rgba(0,0,0,.05);border-radius:5px;cursor:move;box-sizing:border-box;pointer-events:auto}
+
+.fab-group{position:fixed;bottom:20px;right:16px;display:flex;align-items:center;gap:2px;background:#fff;border-radius:24px;padding:5px;box-shadow:0 2px 10px rgba(0,0,0,.08),0 0 0 1px rgba(0,0,0,.04);z-index:200}
+.fab{display:flex;align-items:center;justify-content:center;width:38px;height:38px;border-radius:19px;background:transparent;border:none;cursor:pointer;color:#666;transition:all .15s}
+.fab:hover{background:#f3f3f3;color:#111}
+.fab.active{background:#111;color:#fff}
+.fab.active:hover{background:#000;color:#fff}
+
+/* floating panel (agent/assets) */
+.floatp{position:fixed;right:16px;bottom:74px;width:360px;height:720px;max-height:calc(100vh - 100px);background:#f1f1f1;border-radius:18px;box-shadow:0 8px 32px rgba(0,0,0,.12),0 0 0 1px rgba(0,0,0,.04);display:flex;flex-direction:column;z-index:150;overflow:hidden;font-family:inherit}
+.floatp.ap{width:380px}
+.fp-hd{display:flex;align-items:center;justify-content:space-between;padding:16px 18px 10px}
+.fp-ttl{display:flex;align-items:center;gap:6px;font-size:14px;font-weight:600;color:#111;cursor:pointer}
+.fp-ttl:hover{color:#000}
+.fp-min{background:none;border:none;cursor:pointer;padding:6px;border-radius:6px;display:flex;align-items:center;justify-content:center}
+.fp-min:hover{background:#e3e3e3}
+.fp-bd{flex:1;overflow-y:auto;padding:6px 18px 14px}
+.fp-bd::-webkit-scrollbar{width:6px}.fp-bd::-webkit-scrollbar-thumb{background:rgba(0,0,0,.15);border-radius:3px}
+.ag-msg{font-size:13px;line-height:1.55;color:#222;margin:8px 0}
+.plan-blk{margin:12px 0;padding-left:11px;border-left:1.5px solid #d8d8d8}
+.plan-hd{display:flex;align-items:center;gap:5px;color:#888;font-size:12px;margin-bottom:8px}
+.plan-prog{font-size:11.5px}
+.plan-items{display:flex;flex-direction:column;gap:7px}
+.plan-item{display:flex;align-items:flex-start;gap:8px;font-size:12.5px;color:#444;line-height:1.45}
+.plan-item.s-done{color:#888}
+.plan-item.s-done span{text-decoration:line-through;text-decoration-color:#c0c0c0}
+.plan-item svg{flex-shrink:0;margin-top:3px}
+.task-card{margin:14px 0;background:#fafafa;border:1px solid #e6e6e6;border-radius:10px;padding:12px 13px}
+.tc-hd{display:flex;align-items:center;justify-content:space-between}
+.tc-link{display:inline-block;font-size:12px;color:#222;text-decoration:underline;cursor:pointer;margin-bottom:10px}
+.tc-thumbs{display:flex;gap:5px;flex-wrap:wrap}
+.tc-thumb{width:42px;height:42px;border-radius:6px;border:1px solid #e0e0e0;background:#eee;display:flex;align-items:center;justify-content:center;overflow:hidden}
+.fp-ft{padding:10px 14px 14px;background:#f1f1f1}
+.ag-in{display:block;width:100%;background:#fff;border:1px solid #e2e2e2;border-radius:14px 14px 0 0;padding:10px 14px;font-size:13px;line-height:1.4;color:#222;resize:none;height:44px;font-family:inherit;outline:none;box-sizing:border-box;border-bottom:none;vertical-align:top;margin:0}
+.ag-in:focus{border-color:#d0d0d0}
+.ag-in::placeholder{color:#aaa}
+.ag-bar{background:#fff;border:1px solid #e2e2e2;border-top:none;border-radius:0 0 14px 14px;padding:6px 8px 6px 12px;display:flex;align-items:center;gap:6px;margin-top:-1px}
+.ag-mode{display:flex;align-items:center;gap:5px;background:transparent;border:none;color:#666;font-size:12px;cursor:pointer;padding:4px 6px;border-radius:5px}
+.ag-mode:hover{background:#f3f3f3}
+.ag-mic{width:28px;height:28px;border-radius:14px;background:transparent;border:none;color:#777;cursor:pointer;display:flex;align-items:center;justify-content:center}
+.ag-mic:hover{background:#f3f3f3;color:#222}
+.ag-send{width:28px;height:28px;border-radius:14px;background:#d8d8d8;border:none;color:#666;cursor:pointer;display:flex;align-items:center;justify-content:center}
+.ag-send:hover{background:#111;color:#fff}
+
+/* assets */
+.ap-search-row{display:flex;gap:8px;padding:0 18px 12px;border-bottom:1px solid #e4e4e4;margin-bottom:8px}
+.ap-search{flex:1;display:flex;align-items:center;background:#fff;border:1px solid #e2e2e2;border-radius:18px;padding:7px 14px;height:34px;box-sizing:border-box}
+.ap-search input{flex:1;border:none;background:none;outline:none;font-size:13px;color:#222;font-family:inherit}
+.ap-search input::placeholder{color:#aaa}
+.ap-kbd{font-size:11px;color:#bbb;background:#f3f3f3;padding:2px 6px;border-radius:4px}
+.ap-filter{width:34px;height:34px;border-radius:17px;background:#fff;border:1px solid #e2e2e2;cursor:pointer;display:flex;align-items:center;justify-content:center}
+.ap-filter:hover{background:#f5f5f5}
+.ap-grid{padding:0 14px 14px;display:flex;gap:8px;overflow-y:auto;flex:1}
+.ap-grid::-webkit-scrollbar{width:6px}.ap-grid::-webkit-scrollbar-thumb{background:rgba(0,0,0,.15);border-radius:3px}
+.ap-col{flex:1;display:flex;flex-direction:column;gap:14px;min-width:0}
+.ap-card{display:flex;flex-direction:column;cursor:pointer}
+.ap-thumb{position:relative;width:100%;border-radius:8px;overflow:hidden;border:1px solid #e8e8e8;display:flex;align-items:center;justify-content:center}
+.ap-text{background:#fff;border:1px solid #e6e6e6;border-radius:8px;padding:10px 11px;min-height:110px}
+.ap-text-title{font-size:10.5px;font-weight:600;color:#222;margin-bottom:6px;line-height:1.3}
+.ap-text-body{font-size:9px;color:#666;line-height:1.4;white-space:pre-line}
+.ap-name{font-size:12.5px;font-weight:600;color:#111;margin:6px 2px 1px;line-height:1.3}
+.ap-kind{font-size:11px;color:#999;margin:0 2px}
+.zb-btn{width:28px;height:28px;border:none;background:transparent;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:16px;color:#555;transition:background .12s}
+.zb-btn:hover{background:#f0f0f0}
+.zb-val{font-size:11.5px;font-weight:500;color:#666;min-width:42px;text-align:center;border-left:1px solid #eee;border-right:1px solid #eee}
+
+.cv-root{width:100%;height:100%;position:relative;overflow:hidden}
+.cv-bg{position:absolute;inset:0;background:#e5e5e5;background-image:radial-gradient(circle,#b8b8b8 1px,transparent 1px);background-size:24px 24px}
+.cv-world{position:absolute;top:0;left:0;transform-origin:0 0}
+
+.vnode{position:absolute;cursor:grab;user-select:none}
+.vnode-card{border-radius:8px;overflow:hidden;border:1.5px solid rgba(0,0,0,.14);background:#d4d4d4;position:relative;display:flex;align-items:center;justify-content:center;transition:border-color .15s,box-shadow .15s}
+.vnode.sel .vnode-card{border-color:#2563eb;box-shadow:0 0 0 2.5px rgba(37,99,235,.25)}
+.vnode-card:hover{border-color:rgba(0,0,0,.28)}
+.vnode-lbl{font-size:10.5px;color:#888;margin-top:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sel-dot{position:absolute;width:7px;height:7px;background:#fff;border:1.5px solid #2563eb;border-radius:2px}
+
+.ntb{position:absolute;top:-42px;left:50%;transform:translateX(-50%);background:#1c1c1c;border-radius:20px;padding:4px 5px;display:flex;align-items:center;gap:1px;white-space:nowrap;box-shadow:0 6px 20px rgba(0,0,0,.28);z-index:20}
+.ntb-btn{background:none;border:none;color:#bbb;cursor:pointer;padding:6px 8px;border-radius:14px;transition:all .12s;display:flex;align-items:center;justify-content:center}
+.ntb-btn:hover:not(:disabled){background:rgba(255,255,255,.14);color:#fff}
+.ntb-sep{width:1px;height:14px;background:rgba(255,255,255,.12);margin:0 2px}
+
+.slider{-webkit-appearance:none;appearance:none;width:100%;height:4px;border-radius:2px;background:#e8e8e8;outline:none;cursor:pointer}
+.slider::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:14px;height:14px;border-radius:50%;background:#111;cursor:pointer;border:2px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,.2)}
+.slider::-moz-range-thumb{width:14px;height:14px;border-radius:50%;background:#111;cursor:pointer;border:2px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,.2)}
+
+.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.78);z-index:300;display:flex;align-items:center;justify-content:center;animation:fade .2s ease;padding:40px}
+@keyframes fade{from{opacity:0}to{opacity:1}}
+.modal-frame{position:relative;max-width:80vw;height:75vh}
+.modal-x{position:fixed;top:20px;right:24px;width:36px;height:36px;border-radius:18px;background:rgba(255,255,255,.12);border:none;color:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(6px);transition:background .15s}
+.modal-x:hover{background:rgba(255,255,255,.22)}
+
+.panel{position:fixed;top:56px;right:16px;width:310px;max-height:calc(100vh - 72px);background:#fff;border-radius:16px;box-shadow:0 8px 40px rgba(0,0,0,.12),0 0 0 1px rgba(0,0,0,.06);z-index:100;overflow:hidden;animation:pin .18s ease;display:flex;flex-direction:column}
+@keyframes pin{from{opacity:0;transform:translateY(-6px) scale(.98)}to{opacity:1;transform:none}}
+.ph{padding:13px 16px 10px;border-bottom:1px solid #f0f0f0;display:flex;align-items:flex-start;justify-content:space-between}
+.ph-drag{cursor:move;user-select:none}
+.pt{font-size:15px;font-weight:600;color:#111}
+.ps{font-size:11px;color:#999;margin-top:2px}
+.pc{width:26px;height:26px;border-radius:13px;border:none;background:#f0f0f0;cursor:pointer;display:flex;align-items:center;justify-content:center;color:#666}
+.pb{padding:14px 16px 18px;display:flex;flex-direction:column;gap:14px;overflow-y:auto;min-height:0;flex:1}
+.panel-footer{position:relative;flex-shrink:0;padding:12px 16px 14px;background:#fff;border-top:1px solid #f4f4f4}
+.panel-footer::before{content:"";position:absolute;left:0;right:0;top:-28px;height:28px;background:linear-gradient(to bottom,rgba(255,255,255,0),#fff);pointer-events:none}
+.fl{font-size:10px;font-weight:600;color:#999;letter-spacing:.06em;text-transform:uppercase;margin-bottom:6px}
+.seg{display:flex;background:#f3f3f3;border-radius:9px;padding:3px;gap:3px}
+.seg-tab{flex:1;padding:6px 0;border-radius:7px;border:none;font-size:12px;font-weight:500;cursor:pointer;transition:all .15s;background:transparent;color:#999}
+.seg-tab.on{background:#fff;color:#111;box-shadow:0 1px 4px rgba(0,0,0,.1)}
+.mode-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px}
+.mode-tab{height:30px;border-radius:8px;border:1.5px solid #e7e7e7;background:#fff;color:#666;font-size:11px;font-weight:600;cursor:pointer;transition:all .14s;white-space:nowrap}
+.mode-tab.on{background:#111;border-color:#111;color:#fff}
+.mode-tab:hover:not(.on){border-color:#bbb;color:#111}
+.pill{padding:4px 11px;border-radius:20px;font-size:12px;font-weight:500;cursor:pointer;border:1.5px solid #e0e0e0;background:#fff;color:#555;transition:all .12s}
+.pill.on{border-color:#111;background:#111;color:#fff}
+.pill:hover:not(.on){border-color:#bbb}
+.pill.off{opacity:.35;cursor:not-allowed;text-decoration:line-through}
+.ta{width:100%;min-height:78px;padding:10px 12px;font-size:13px;line-height:1.5;border:1.5px solid #eee;border-radius:10px;background:#fafafa;resize:none;outline:none;color:#222;transition:border-color .15s}
+.ta:focus{border-color:#aaa;background:#fff}
+.ta::placeholder{color:#bbb}
+.imgslot{flex:1;height:70px;border-radius:10px;border:1.5px dashed #ddd;background:#f8f8f8;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;cursor:pointer;position:relative;overflow:hidden}
+.imgslot:hover{border-color:#aaa;background:#f0f0f0}
+.imgslot img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.add-asset{height:34px;padding:0 10px;border-radius:9px;border:1.5px dashed #d8d8d8;background:#fafafa;color:#777;font-size:11px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:5px}
+.add-asset:hover{border-color:#aaa;background:#f3f3f3;color:#111}
+.asset-chip{width:62px;height:62px;border-radius:9px;position:relative;overflow:hidden;background:#f5f5f5;border:1px solid #e4e4e4;display:flex;align-items:center;justify-content:center}
+.asset-chip img,.asset-chip video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.asset-chip span{position:absolute;left:0;right:0;bottom:0;padding:9px 3px 3px;background:linear-gradient(transparent,rgba(0,0,0,.62));color:#fff;font-size:9px;font-weight:600;text-align:center}
+.asset-chip button{position:absolute;top:3px;right:3px;width:17px;height:17px;border-radius:9px;border:none;background:rgba(0,0,0,.55);color:#fff;font-size:12px;line-height:17px;cursor:pointer}
+.audio-chip{display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#f6f6f6,#e8e8e8);color:#777}
+.tgl{width:36px;height:20px;border-radius:10px;border:none;position:relative;cursor:pointer;transition:background .2s;flex-shrink:0}
+.tgl-k{position:absolute;top:2px;width:16px;height:16px;background:#fff;border-radius:8px;transition:left .2s;box-shadow:0 1px 3px rgba(0,0,0,.2)}
+.btn-gen{width:100%;padding:11px;border-radius:10px;border:none;font-size:14px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:7px;transition:all .15s}
+.btn-gen.ok{background:#111;color:#fff}
+.btn-gen.ok:hover{opacity:.85}
+.btn-gen.no{background:#e0e0e0;color:#aaa;cursor:not-allowed}
+
+.empty{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center;pointer-events:none;z-index:0}
+.empty h3{font-size:17px;color:#c0c0c0;font-weight:400}
+.empty p{font-size:12px;color:#d0d0d0;margin-top:5px}
+
+@keyframes blink{0%,100%{opacity:.3}50%{opacity:1}}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const{useState,useRef,useEffect}=React;
+
+// ── DotGrid: multi-density layered dots that scale with zoom ─────────────
+function DotGrid({pan,zoom}){
+  const ref=useRef();
+  useEffect(()=>{
+    const c=ref.current;if(!c)return;
+    const dpr=window.devicePixelRatio||1;
+    const W=c.offsetWidth,H=c.offsetHeight;
+    c.width=W*dpr;c.height=H*dpr;
+    const ctx=c.getContext("2d");
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+    ctx.clearRect(0,0,W,H);
+
+    // Uniform small dot grid. Subtle, never competes with content.
+    const BASE=24;
+    let step=BASE*zoom;
+    while(step<10)step*=5;
+    while(step>120)step/=5;
+    let alpha=1;
+    if(step<14)alpha=(step-10)/4;
+    if(step>90)alpha=Math.max(0.3,(120-step)/30);
+    alpha=Math.max(0,Math.min(1,alpha));
+
+    const ox=((pan.x%step)+step)%step;
+    const oy=((pan.y%step)+step)%step;
+    ctx.fillStyle=`rgba(150,150,150,${0.4*alpha})`;
+    const r=1;
+    for(let x=ox-step;x<W+step;x+=step){
+      for(let y=oy-step;y<H+step;y+=step){
+        ctx.beginPath();ctx.arc(x,y,r,0,Math.PI*2);ctx.fill();
+      }
+    }
+  },[pan.x,pan.y,zoom]);
+
+  // Track resize
+  useEffect(()=>{
+    function onR(){if(ref.current){ref.current.style.width=window.innerWidth+"px";ref.current.style.height=window.innerHeight+"px";}}
+    onR();window.addEventListener("resize",onR);
+    return()=>window.removeEventListener("resize",onR);
+  },[]);
+
+  return <canvas ref={ref} style={{position:"absolute",inset:0,width:"100%",height:"100%",pointerEvents:"none",background:"#e5e5e5"}}/>;
+}
+
+function Minimap({nodes,selId,pan,zoom,onPan}){
+  const W=140,H=96,PAD=2;
+  // World bounds: union of nodes + viewport, with margin
+  const vpW=window.innerWidth/zoom, vpH=window.innerHeight/zoom;
+  const vx=-pan.x/zoom, vy=-pan.y/zoom;
+  let bx=vx,by=vy,bX=vx+vpW,bY=vy+vpH;
+  for(const n of nodes){
+    const[w,h]=window.frameSize(n.ar,n.resolution);
+    if(n.x<bx)bx=n.x;if(n.y<by)by=n.y;
+    if(n.x+w>bX)bX=n.x+w;if(n.y+h>bY)bY=n.y+h;
+  }
+  // Margin
+  const M=50;bx-=M;by-=M;bX+=M;bY+=M;
+  const bw=bX-bx,bh=bY-by;
+  const s=Math.min((W-PAD*2)/bw,(H-PAD*2)/bh);
+  const ox=PAD+(W-PAD*2-bw*s)/2,oy=PAD+(H-PAD*2-bh*s)/2;
+  function w2m(x,y){return[ox+(x-bx)*s,oy+(y-by)*s];}
+  function m2w(mx,my){return[(mx-ox)/s+bx,(my-oy)/s+by];}
+  function onDown(e){
+    const r=e.currentTarget.getBoundingClientRect();
+    function go(ev){
+      const mx=ev.clientX-r.left,my=ev.clientY-r.top;
+      const[wx,wy]=m2w(mx,my);
+      onPan({x:window.innerWidth/2-wx*zoom,y:window.innerHeight/2-wy*zoom});
+    }
+    go(e);
+    function mv(ev){go(ev);}
+    function up(){window.removeEventListener("mousemove",mv);window.removeEventListener("mouseup",up);}
+    window.addEventListener("mousemove",mv);window.addEventListener("mouseup",up);
+  }
+  const[vx0,vy0]=w2m(vx,vy);
+  return(
+    <div className="minimap" onMouseDown={onDown}>
+      {nodes.map(n=>{
+        const[w,h]=window.frameSize(n.ar,n.resolution);
+        const[mx,my]=w2m(n.x,n.y);
+        return<div key={n.id} className={"mm-node"+(n.id===selId?" sel":"")} style={{left:mx,top:my,width:Math.max(2,w*s),height:Math.max(2,h*s)}}/>;
+      })}
+      <div className="mm-vp" style={{left:vx0,top:vy0,width:vpW*s,height:vpH*s}}/>
+    </div>
+  );
+}
+
+function App(){
+  const[zoom,setZoom]=useState(1);
+  const[pan,setPan]=useState({x:0,y:0});
+  const[nodes,setNodes]=useState([]);
+  const[selId,setSelId]=useState(null);
+  const[tool,setTool]=useState("cursor");
+  const[spaceDown,setSpaceDown]=useState(false);
+  const[panActive,setPanActive]=useState(false);
+  const[panel,setPanel]=useState(null);
+  const[preview,setPreview]=useState(null);
+  const[backendConfig]=useState(()=>window.readBackendConfig());
+  const panning=useRef(false);
+  const createInFlight=useRef(false);
+  const panStart=useRef(null);
+  const cvRef=useRef();
+  const zoomRef=useRef(zoom);const panRef=useRef(pan);
+  useEffect(()=>{zoomRef.current=zoom;},[zoom]);
+  useEffect(()=>{panRef.current=pan;},[pan]);
+
+  const selNode=nodes.find(n=>n.id===selId)||null;
+  // Hand mode active if tool=hand OR space-held
+  const handMode=tool==="hand"||spaceDown;
+
+  // Smoothly animate zoom toward a screen point
+  const animRef=useRef(null);
+  function setZoomTo(nz,sx,sy,animate=true){
+    const z0=zoomRef.current,p0=panRef.current;
+    nz=Math.max(0.1,Math.min(4,nz));
+    const wx=(sx-p0.x)/z0,wy=(sy-p0.y)/z0;
+    const targetPan={x:sx-wx*nz,y:sy-wy*nz};
+    if(!animate){setZoom(nz);setPan(targetPan);return;}
+    if(animRef.current)cancelAnimationFrame(animRef.current);
+    const start=performance.now();
+    const dur=240;
+    const pStart=p0,zStart=z0;
+    const ease=t=>1-Math.pow(1-t,3);
+    function tick(now){
+      const t=Math.min(1,(now-start)/dur);const k=ease(t);
+      setZoom(zStart+(nz-zStart)*k);
+      setPan({x:pStart.x+(targetPan.x-pStart.x)*k,y:pStart.y+(targetPan.y-pStart.y)*k});
+      if(t<1)animRef.current=requestAnimationFrame(tick);else animRef.current=null;
+    }
+    animRef.current=requestAnimationFrame(tick);
+  }
+  function zoomAt(factor,sx,sy,animate=false){
+    setZoomTo(zoomRef.current*factor,sx,sy,animate);
+  }
+
+  function onCvMouseDown(e){
+    const target=e.target;
+    if(e.button===1||(e.button===0&&handMode)){
+      e.preventDefault();
+      panning.current=true;
+      setPanActive(true);
+      panStart.current={x:e.clientX-panRef.current.x,y:e.clientY-panRef.current.y};
+      return;
+    }
+    if(e.button===0&&target===cvRef.current){
+      setSelId(null);
+      if(panel&&panel.type==="detail")setPanel(null);
+    }
+  }
+  function onCvMouseMove(e){
+    if(panning.current&&panStart.current){
+      setPan({x:e.clientX-panStart.current.x,y:e.clientY-panStart.current.y});
+    }
+  }
+  function onCvMouseUp(){if(panning.current){panning.current=false;setPanActive(false);}}
+
+  function onWheel(e){
+    e.preventDefault();
+    // Ctrl/Cmd+wheel or trackpad pinch → zoom; plain wheel → pan
+    if(e.ctrlKey||e.metaKey){
+      const f=Math.exp(-e.deltaY*0.01);
+      zoomAt(f,e.clientX,e.clientY,false);
+    } else {
+      setPan(p=>({x:p.x-e.deltaX,y:p.y-e.deltaY}));
+    }
+  }
+
+  useEffect(()=>{
+    const el=cvRef.current;
+    if(el)el.addEventListener("wheel",onWheel,{passive:false});
+    return()=>{if(el)el.removeEventListener("wheel",onWheel)};
+  },[]);
+
+  // Keyboard: Space=hand, Cmd/Ctrl +/- zoom, Cmd/Ctrl 0 reset, Esc deselect, Delete remove
+  useEffect(()=>{
+    function isTypable(el){
+      if(!el)return false;
+      const t=el.tagName;
+      return t==="INPUT"||t==="TEXTAREA"||el.isContentEditable;
+    }
+    function onKD(e){
+      if(isTypable(document.activeElement))return;
+      if(e.code==="Space"&&!e.repeat){e.preventDefault();setSpaceDown(true);return;}
+      if((e.metaKey||e.ctrlKey)&&(e.key==="="||e.key==="+")){
+        e.preventDefault();
+        const cx=window.innerWidth/2,cy=window.innerHeight/2;
+        const next=Math.round((zoomRef.current+0.1)*10)/10;
+        setZoomTo(next,cx,cy,true);return;
+      }
+      if((e.metaKey||e.ctrlKey)&&e.key==="-"){
+        e.preventDefault();
+        const cx=window.innerWidth/2,cy=window.innerHeight/2;
+        const next=Math.round((zoomRef.current-0.1)*10)/10;
+        setZoomTo(next,cx,cy,true);return;
+      }
+      if((e.metaKey||e.ctrlKey)&&e.key==="0"){
+        e.preventDefault();
+        const cx=window.innerWidth/2,cy=window.innerHeight/2;
+        setZoomTo(1,cx,cy,true);return;
+      }
+      if(e.key==="Escape"){setSelId(null);setPanel(null);}
+      if((e.key==="Delete"||e.key==="Backspace")&&selId){
+        e.preventDefault();
+        setNodes(ns=>ns.filter(n=>n.id!==selId));
+        setSelId(null);setPanel(null);
+      }
+    }
+    function onKU(e){
+      if(e.code==="Space"){setSpaceDown(false);panning.current=false;setPanActive(false);}
+    }
+    function onWinUp(){if(panning.current){panning.current=false;setPanActive(false);}}
+    window.addEventListener("keydown",onKD);
+    window.addEventListener("keyup",onKU);
+    window.addEventListener("mouseup",onWinUp);
+    window.addEventListener("blur",onWinUp);
+    return()=>{window.removeEventListener("keydown",onKD);window.removeEventListener("keyup",onKU);window.removeEventListener("mouseup",onWinUp);window.removeEventListener("blur",onWinUp);};
+  },[selId]);
+
+  async function addNode(params){
+    if(createInFlight.current)throw new Error("任务正在提交，请稍候");
+    const validationErrors=window.validateCreateTaskParams(params,backendConfig);
+    if(validationErrors.length){
+      const err=new Error(validationErrors[0].message);
+      err.field=validationErrors[0].field;
+      throw err;
+    }
+    createInFlight.current=true;
+    const payload=window.buildCreateTaskPayload(params);
+    try{
+      const created=await window.createVideoTask(payload,backendConfig);
+      const taskId=created.task_id;
+      const taskPatch={
+        ...params,
+        status:"generating",
+        progress:0,
+        taskId,
+        task_id:taskId,
+        backendMode:created.backend_mode||backendConfig.mode,
+        rawCreate:created,
+        createdAt:Date.now()
+      };
+    if(panel?.nodeId){
+      const existing=nodes.find(n=>n.id===panel.nodeId);
+      if(existing){
+        const id=existing.id;
+        setNodes(ns=>ns.map(n=>n.id===id?{...n,...taskPatch}:n));
+        setSelId(id);setPanel(null);
+        return created;
+      }
+    }
+    const id="n"+(Date.now());
+    const[w,h]=window.frameSize(params.ar,params.resolution);
+    let nx,ny;
+    if(nodes.length===0){
+      const cx=window.innerWidth/2,cy=window.innerHeight/2;
+      nx=(cx-pan.x)/zoom-w/2;ny=(cy-pan.y)/zoom-h/2;
+    } else {
+      let maxR=-Infinity,refY=0;
+      for(const n of nodes){
+        const[nw]=window.frameSize(n.ar,n.resolution);
+        const r=n.x+nw;
+        if(r>maxR){maxR=r;refY=n.y;}
+      }
+      nx=maxR+100;ny=refY;
+    }
+    const newNode={id,x:nx,y:ny,...taskPatch};
+    setNodes(ns=>[...ns,newNode]);
+    setSelId(id);setPanel(null);
+    return created;
+    }finally{
+      createInFlight.current=false;
+    }
+  }
+  function simulateGen(id){
+    let p=0;
+    const t=setInterval(()=>{
+      p+=Math.random()*15+5;
+      if(p>=100){clearInterval(t);setNodes(ns=>ns.map(n=>n.id===id?{...n,status:"done",progress:100}:n));}
+      else setNodes(ns=>ns.map(n=>n.id===id?{...n,progress:Math.round(p)}:n));
+    },400);
+  }
+
+  function onClickNode(id,wasSelected){
+    const n=nodes.find(x=>x.id===id);if(!n)return;
+    if(!wasSelected){setSelId(id);setPanel(null);return;}
+    if(n.status==="done")setPanel({type:"detail",nodeId:id});
+    else setPanel({type:"create",nodeId:id});
+  }
+  function onNodeAction(id,act){
+    const n=nodes.find(x=>x.id===id);if(!n)return;
+    if(act==="preview")setPreview(n);
+    else if(act==="download")alert("下载 "+(n.title||"video")+".mp4 (mock)");
+    else if(act==="info")setPanel({type:"detail",nodeId:id});
+    else if(act==="delete")deleteNode(id);
+  }
+
+  function deleteNode(id){setNodes(ns=>ns.filter(n=>n.id!==id));setSelId(null);setPanel(null);}
+  function moveNode(id,pos){setNodes(ns=>ns.map(n=>n.id===id?{...n,...pos}:n));}
+
+  const tools=[
+    {id:"cursor",tip:"选择",icon:<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M5 3l14 9-7 1.5-4 8z"/></svg>},
+    {id:"hand",tip:"平移",icon:<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M18 11V8a2 2 0 00-4 0v-1a2 2 0 00-4 0V6a2 2 0 00-4 0v8l-1.5-1.5a2 2 0 00-2.8 2.8L6 19a5 5 0 005 1h3a5 5 0 005-5v-4z"/></svg>},
+    {id:"sep"},
+    {id:"video",tip:"创建视频",icon:<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M15 10l4.6-2.3A1 1 0 0121 8.7v6.6a1 1 0 01-1.4.9L15 14M3 8a2 2 0 012-2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg>},
+  ];
+
+  function onToolClick(id){
+    if(id==="video"){setPanel({type:"create"});setTool("cursor");}
+    else setTool(id);
+  }
+
+  const cursor=handMode?(panActive?"grabbing":"grab"):"default";
+  useEffect(()=>{document.body.style.cursor=handMode?(panActive?"grabbing":"grab"):"";return()=>{document.body.style.cursor="";};},[handMode,panActive]);
+
+  return(
+    <div style={{width:"100vw",height:"100vh",position:"relative",overflow:"hidden",cursor}}>
+      {/* Canvas BG — multi-layer dot grid scaling with zoom */}
+      <DotGrid pan={pan} zoom={zoom}/>
+
+      {/* Canvas interaction layer */}
+      <div ref={cvRef} style={{position:"absolute",inset:0}} onMouseDown={onCvMouseDown} onMouseMove={onCvMouseMove} onMouseUp={onCvMouseUp}>
+        {/* World layer (transforms with pan + zoom) */}
+        <div style={{position:"absolute",top:0,left:0,transform:`translate(${pan.x}px,${pan.y}px) scale(${zoom})`,transformOrigin:"0 0",pointerEvents:"none"}}>
+          <div style={{pointerEvents:"auto"}}>
+          {nodes.map(n=>(
+            <VNode key={n.id} node={n} sel={selId===n.id} zoom={zoom}
+              onClickNode={onClickNode}
+              onMove={moveNode}
+              onAction={(act)=>onNodeAction(n.id,act)}
+            />
+          ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Top bar */}
+      <div className="topbar">
+        <div className="tb-left">
+          <div style={{width:28,height:28,background:"#111",borderRadius:7,display:"flex",alignItems:"center",justifyContent:"center"}}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="white"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+          </div>
+          <div className="tb-title">未命名画布 <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{opacity:.4}}><path d="M6 9l6 6 6-6"/></svg></div>
+        </div>
+        <div className="tb-right">
+          <div className="btn-white" title={backendConfig.mode==="mock"?"当前使用本地 mock 后端，不会访问真实服务":window.createEndpoint?.(backendConfig)||""}>
+            {backendConfig.mode==="mock"?"Mock 后端":backendConfig.mode==="dev"?"Dev 后端":"真实后端"}
+          </div>
+        </div>
+      </div>
+
+      {/* Bottom toolbar */}
+      <div className="toolbar">
+        {tools.map((t,i)=>t.id==="sep"
+          ?<div key={i} className="t-sep"/>
+          :<button key={t.id} className={"tool-btn"+(tool===t.id?" on":"")} onClick={()=>onToolClick(t.id)}>
+            {t.icon}
+            <span className="t-tip">{t.tip}</span>
+          </button>
+        )}
+      </div>
+
+      {/* Zoom bar */}
+      <div className="zoom-bar">
+        <button className="zb-btn" onClick={()=>{const cx=window.innerWidth/2,cy=window.innerHeight/2;setZoomTo(Math.round((zoomRef.current-0.1)*10)/10,cx,cy,true);}}>−</button>
+        <div className="zb-val">{Math.round(zoom*100)}%</div>
+        <button className="zb-btn" onClick={()=>{const cx=window.innerWidth/2,cy=window.innerHeight/2;setZoomTo(Math.round((zoomRef.current+0.1)*10)/10,cx,cy,true);}}>+</button>
+      </div>
+
+      {handMode&&<Minimap nodes={nodes} selId={selId} pan={pan} zoom={zoom} onPan={setPan}/>}
+
+      <div className="fab-group">
+        <button className={"fab"+(panel?.type==="agent"?" active":"")} title="对话" onClick={()=>setPanel(panel?.type==="agent"?null:{type:"agent"})}>
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor"><path d="M4 4h16a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H8l-4 4z"/></svg>
+        </button>
+        <button className={"fab"+(panel?.type==="assets"?" active":"")} title="资产库" onClick={()=>setPanel(panel?.type==="assets"?null:{type:"assets"})}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+        </button>
+      </div>
+
+      {/* Empty state */}
+      {nodes.length===0&&(
+        <div className="empty">
+          <h3>画布是空的</h3>
+          <p>点击工具栏的 <b>视频</b> 按钮开始创作</p>
+        </div>
+      )}
+
+      {/* Panels */}
+      {panel?.type==="create"&&(
+        <CreatePanel
+          node={nodes.find(n=>n.id===panel.nodeId)}
+          onClose={()=>setPanel(null)}
+          onGenerate={addNode}
+          backendConfig={backendConfig}
+        />
+      )}
+      {panel?.type==="detail"&&(()=>{const n=nodes.find(x=>x.id===panel.nodeId);return n&&(
+        <DetailPanel
+          node={n}
+          onClose={()=>setPanel(null)}
+          onPreview={()=>setPreview(n)}
+          onDownload={()=>alert("下载 "+(n.title||"video")+".mp4 (mock)")}
+          onDelete={()=>deleteNode(n.id)}
+          onRegen={()=>setPanel({type:"create",nodeId:n.id})}
+        />
+      );})()}
+      {panel?.type==="agent"&&<AgentPanel onClose={()=>setPanel(null)} nodes={nodes}/>}
+      {panel?.type==="assets"&&<AssetsPanel onClose={()=>setPanel(null)} nodes={nodes}/>}
+      {preview&&<PreviewModal node={preview} onClose={()=>setPreview(null)}/>}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>

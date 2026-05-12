@@ -17,6 +17,106 @@ pip install -e .
 | `ARK_DEFAULT_MODEL_ID` | 默认模型 ID | ❌ | `doubao-seedance-2-0-fast-260128` |
 | `ARK_TIMEOUT_SECONDS` | 请求超时（秒） | ❌ | `30.0` |
 
+后端服务相关：
+
+| 变量 | 说明 | 必填 | 默认值 |
+|------|------|------|--------|
+| `SD2VIDEO_MOCK` | `1` 启用 mock/dev 模式，不访问火山方舟 | ❌ | `0` |
+| `SD2VIDEO_CORS_ORIGINS` | 允许访问后端的前端 Origin，逗号分隔 | ❌ | `http://localhost:5173,http://127.0.0.1:5173,file://` |
+| `SD2VIDEO_BIND` | 后端监听地址 | ❌ | `127.0.0.1:8787` |
+| `SD2VIDEO_POLL_INTERVAL_SECONDS` | 暴露给前端的推荐轮询间隔 | ❌ | `5.0` |
+| `SD2VIDEO_POLL_TIMEOUT_SECONDS` | 暴露给前端的推荐轮询超时 | ❌ | `600.0` |
+
+`ARK_API_KEY` 只在 `SD2VIDEO_MOCK=0` 的真实后端模式下读取，不会返回给前端、写入浏览器存储或包含在普通接口响应中。
+
+## 本地后端服务
+
+安装服务运行依赖：
+
+```bash
+pip install -e '.[server]'
+```
+
+启动 mock/dev 后端（不需要 `ARK_API_KEY`）：
+
+```bash
+export SD2VIDEO_MOCK=1
+sd2video-server
+# 或
+python3 -m sd2video.server
+```
+
+启动真实火山方舟后端：
+
+```bash
+unset SD2VIDEO_MOCK
+export ARK_API_KEY=你的火山方舟 API Key
+sd2video-server
+```
+
+前端可调用的主要接口：
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `GET` | `/api/v1/health` | 服务健康状态 |
+| `GET` | `/api/v1/capabilities` | 支持的模型、比例、分辨率、时长、资源数量等能力边界 |
+| `POST` | `/api/v1/tasks` | 创建视频任务 |
+| `GET` | `/api/v1/tasks` | 列表，支持 `page_num`、`page_size`、`status`、`task_ids` 查询参数 |
+| `GET` | `/api/v1/tasks/{task_id}` | 查询单个任务 |
+| `DELETE` | `/api/v1/tasks/{task_id}` | 删除或取消任务 |
+
+mock 流程示例：
+
+```bash
+curl http://127.0.0.1:8787/api/v1/capabilities
+curl -X POST http://127.0.0.1:8787/api/v1/tasks \
+  -H 'Content-Type: application/json' \
+  -d '{"mode":"t2v","model":"doubao-seedance-2-0-fast-260128","prompt":"一只猫在跳舞","ratio":"16:9","duration":5}'
+curl http://127.0.0.1:8787/api/v1/tasks
+```
+
+错误响应统一为：
+
+```json
+{
+  "error": {
+    "code": "parameter_invalid",
+    "message": "...",
+    "request_id": "..."
+  }
+}
+```
+
+常见错误码包括 `parameter_invalid`、`mode_constraint_violation`、`duplicate_request`、`task_not_found`、`task_state_conflict`、`upstream_unauthorized`、`upstream_failed`、`upstream_timeout`、`rate_limited`。
+
+完整前后端契约见 `docs/api_contract.md`。
+
+## 前端面板联调
+
+HOM-22 面板快照在 `frontend_current/frontend/`。启动 mock/dev 后端后，可用静态文件服务打开画布：
+
+```bash
+export SD2VIDEO_MOCK=1
+python3 -m sd2video.server --port 8787
+
+cd frontend_current/frontend
+python3 -m http.server 5173
+```
+
+如后端不在同源地址，可在页面加载前注入：
+
+```html
+<script>window.__SD2VIDEO_API_BASE__ = "http://127.0.0.1:8787";</script>
+```
+
+或在 HTML 里设置：
+
+```html
+<meta name="sd2video-api-base" content="http://127.0.0.1:8787">
+```
+
+前端提交统一调用 `POST /api/v1/tasks`，payload 只包含 `mode + prompt + assets` 等 contract 字段，并为每次提交生成 `client_request_id`。前端不发送 Ark 原始 `content` 数组，不发送 `negative_prompt`，也不接触 `ARK_API_KEY`。
+
 ## 快速使用
 
 ### 完整工作流（推荐）
