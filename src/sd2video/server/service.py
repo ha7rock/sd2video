@@ -447,15 +447,15 @@ def _build_content(
         items.append(text_content(prompt))
 
     if mode == "first_frame":
-        first_frame = _required_asset(assets, "first_frame")
+        first_frame = _required_asset(assets, "first_frame", kind="image")
         items.append(image_content(first_frame, role="first_frame"))
     elif mode == "first_last":
-        items.append(image_content(_required_asset(assets, "first_frame"), role="first_frame"))
-        items.append(image_content(_required_asset(assets, "last_frame"), role="last_frame"))
+        items.append(image_content(_required_asset(assets, "first_frame", kind="image"), role="first_frame"))
+        items.append(image_content(_required_asset(assets, "last_frame", kind="image"), role="last_frame"))
     elif mode == "reference":
-        images = _asset_list(assets, "reference_images", limit=9)
-        videos = _asset_list(assets, "reference_videos", limit=3)
-        audios = _asset_list(assets, "reference_audios", limit=3)
+        images = _asset_list(assets, "reference_images", limit=9, kind="image")
+        videos = _asset_list(assets, "reference_videos", limit=3, kind="video")
+        audios = _asset_list(assets, "reference_audios", limit=3, kind="audio")
         if not images and not videos:
             raise ServiceHTTPError(
                 400,
@@ -467,14 +467,14 @@ def _build_content(
         items.extend(video_content(url) for url in videos)
         items.extend(audio_content(url) for url in audios)
     elif mode == "edit":
-        items.append(video_content(_required_asset(assets, "edit_video")))
+        items.append(video_content(_required_asset(assets, "edit_video", kind="video")))
         items.extend(
             image_content(url, role="reference_image")
-            for url in _asset_list(assets, "reference_images", limit=9)
+            for url in _asset_list(assets, "reference_images", limit=9, kind="image")
         )
-        items.extend(audio_content(url) for url in _asset_list(assets, "reference_audios", limit=3))
+        items.extend(audio_content(url) for url in _asset_list(assets, "reference_audios", limit=3, kind="audio"))
     elif mode == "extend":
-        videos = _asset_list(assets, "reference_videos", limit=3)
+        videos = _asset_list(assets, "reference_videos", limit=3, kind="video")
         if not videos:
             raise ServiceHTTPError(
                 400,
@@ -520,7 +520,7 @@ def _request_summary(payload: Mapping[str, Any], mode: str, model: str) -> dict[
     }
 
 
-def _required_asset(assets: Mapping[str, Any], key: str) -> str:
+def _required_asset(assets: Mapping[str, Any], key: str, *, kind: str) -> str:
     value = assets.get(key)
     if not isinstance(value, str) or not value.strip():
         raise ServiceHTTPError(
@@ -529,10 +529,10 @@ def _required_asset(assets: Mapping[str, Any], key: str) -> str:
             f"assets.{key} is required",
             field=f"assets.{key}",
         )
-    return value.strip()
+    return _validate_asset_url(value.strip(), field=f"assets.{key}", kind=kind)
 
 
-def _asset_list(assets: Mapping[str, Any], key: str, *, limit: int) -> list[str]:
+def _asset_list(assets: Mapping[str, Any], key: str, *, limit: int, kind: str) -> list[str]:
     value = assets.get(key) or []
     if not isinstance(value, list):
         raise ServiceHTTPError(
@@ -548,7 +548,25 @@ def _asset_list(assets: Mapping[str, Any], key: str, *, limit: int) -> list[str]
             f"assets.{key} exceeds the limit of {limit}",
             field=f"assets.{key}",
         )
-    return [str(item).strip() for item in value if str(item).strip()]
+    return [
+        _validate_asset_url(str(item).strip(), field=f"assets.{key}", kind=kind)
+        for item in value
+        if str(item).strip()
+    ]
+
+
+def _validate_asset_url(value: str, *, field: str, kind: str) -> str:
+    if value.startswith(("http://", "https://", "asset://")):
+        return value
+    if kind == "image" and value.startswith("data:image/"):
+        return value
+    raise ServiceHTTPError(
+        415,
+        "unsupported_media_type",
+        f"{field} must be an http(s) URL, asset:// ID"
+        + (", or data:image/... base64" if kind == "image" else ""),
+        field=field,
+    )
 
 
 def _raise_duplicate(existing: Mapping[str, Any]) -> None:

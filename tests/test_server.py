@@ -176,6 +176,44 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(400, status)
         self.assertEqual("parameter_invalid", body["error"]["code"])
 
+    def test_video_and_audio_assets_reject_unsupported_schemes(self) -> None:
+        status, _, body = request(
+            self.app,
+            "POST",
+            "/api/v1/tasks",
+            body={
+                "mode": "edit",
+                "model": "doubao-seedance-2-0-fast-260128",
+                "prompt": "edit it",
+                "assets": {"edit_video": "file:///tmp/private.mp4"},
+            },
+        )
+        self.assertEqual(415, status)
+        self.assertEqual("unsupported_media_type", body["error"]["code"])
+        self.assertEqual("assets.edit_video", body["error"]["field"])
+
+        status, _, body = request(
+            self.app,
+            "POST",
+            "/api/v1/tasks",
+            body={
+                "mode": "reference",
+                "model": "doubao-seedance-2-0-fast-260128",
+                "prompt": "use refs",
+                "assets": {
+                    "reference_images": ["asset://img-1"],
+                    "reference_audios": ["file:///tmp/private.mp3"],
+                },
+            },
+        )
+        self.assertEqual(415, status)
+        self.assertEqual("unsupported_media_type", body["error"]["code"])
+        self.assertEqual("assets.reference_audios", body["error"]["field"])
+
+        status, _, listed = request(self.app, "GET", "/api/v1/tasks")
+        self.assertEqual(200, status)
+        self.assertEqual(0, listed["total"])
+
     def test_missing_task_is_mapped_to_not_found(self) -> None:
         status, _, body = request(self.app, "GET", "/api/v1/tasks/missing")
         self.assertEqual(404, status)
@@ -199,6 +237,20 @@ class ServerTests(unittest.TestCase):
         )
         self.assertEqual(204, status)
         self.assertNotIn("access-control-allow-origin", headers)
+
+    def test_file_origin_cors_is_allowed_when_configured(self) -> None:
+        config = ServerConfig(mock=True, cors_origins=("file://",))
+        app = create_app(config, MockVideoBackend(config))
+
+        status, headers, _ = request(
+            app,
+            "OPTIONS",
+            "/api/v1/tasks",
+            headers={"origin": "null"},
+        )
+        self.assertEqual(204, status)
+        self.assertEqual("null", headers["access-control-allow-origin"])
+        self.assertIn("file://", config.cors_origins)
 
     def test_authentication_and_network_errors_are_mapped(self) -> None:
         app = create_app(self.config, BrokenBackend(ArkAuthenticationError("denied")))

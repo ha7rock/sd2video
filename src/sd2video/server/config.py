@@ -36,7 +36,7 @@ class ServerConfig:
         object.__setattr__(self, "default_model_id", default_model_id)
 
         origins = tuple(
-            origin.strip().rstrip("/")
+            _normalize_origin(origin)
             for origin in self.cors_origins
             if origin.strip()
         )
@@ -87,6 +87,13 @@ def _parse_origins(raw: str | None) -> tuple[str, ...]:
     if raw is None or not raw.strip():
         return DEFAULT_CORS_ORIGINS
     return tuple(part.strip() for part in raw.split(",") if part.strip())
+
+
+def _normalize_origin(origin: str) -> str:
+    origin = origin.strip()
+    if origin == "file://":
+        return origin
+    return origin.rstrip("/")
 
 
 def _float_env(environ: Mapping[str, str], key: str, default: float) -> float:
