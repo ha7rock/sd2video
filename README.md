@@ -17,6 +17,8 @@ pip install -e .
 | `ARK_DEFAULT_MODEL_ID` | 默认模型 ID | ❌ | `doubao-seedance-2-0-fast-260128` |
 | `ARK_TIMEOUT_SECONDS` | 请求超时（秒） | ❌ | `30.0` |
 
+真实环境验收与 live smoke 开关见 `docs/real_environment_acceptance.md`。`ARK_RUN_SMOKE_TESTS` 默认关闭；`ARK_SMOKE_CREATE_TASK=1` 会提交真实生成任务并可能产生费用，只应在明确授权后开启。
+
 后端服务相关：
 
 | 变量 | 说明 | 必填 | 默认值 |
