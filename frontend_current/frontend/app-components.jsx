@@ -222,6 +222,79 @@ function savePanelPos(pos) {
   try { window.localStorage.setItem(PANEL_POS_KEY, JSON.stringify(pos)); } catch (_) {}
 }
 
+const CAMERA_PRESETS = [
+  { id: "dolly_in",    label: "推镜头",   en: "Dolly in",        tag: "镜头缓缓推近" },
+  { id: "dolly_out",   label: "拉镜头",   en: "Dolly out",       tag: "镜头缓缓拉远" },
+  { id: "orbit",       label: "环绕运镜", en: "Orbit shot",      tag: "360度环绕运镜" },
+  { id: "pan",         label: "横摇",     en: "Pan shot",        tag: "镜头缓慢横摇" },
+  { id: "tilt",        label: "俯仰",     en: "Tilt shot",       tag: "镜头缓慢俯仰" },
+  { id: "tracking",    label: "跟拍",     en: "Tracking shot",   tag: "镜头跟拍主体" },
+  { id: "dive",        label: "俯冲",     en: "Dive shot",       tag: "第一视角俯冲" },
+  { id: "close_up",    label: "特写",     en: "Close-up",        tag: "微距特写镜头" },
+  { id: "wide",        label: "远景",     en: "Wide shot",       tag: "镜头拉远展现全景" },
+  { id: "static_shot", label: "固定机位", en: "Static shot",     tag: "固定机位拍摄" },
+  { id: "slow_motion", label: "慢动作",   en: "Slow motion",     tag: "慢动作镜头" },
+  { id: "aerial",      label: "航拍",     en: "Aerial shot",     tag: "航拍俯瞰镜头" },
+];
+
+const CAM_TAG_RE = /《[^》]+》\s*/g;
+
+function CameraPresets({ selected, onChange, fixedCam, onFixedCamChange }) {
+  const { useState: us2 } = React;
+  const [open, setOpen] = us2(true);
+  return (
+    <div>
+      <div onClick={() => setOpen(v => !v)} style={{
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+        cursor: "pointer", userSelect: "none", marginBottom: open ? 8 : 0,
+      }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#666" strokeWidth="1.8">
+            <path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
+          </svg>
+          <span style={{ fontSize: 11, fontWeight: 600, color: "#888", letterSpacing: "0.04em" }}>镜头控制</span>
+          {selected.length > 0 && <span style={{
+            fontSize: 10, color: "#fff", background: "#111", borderRadius: 9,
+            padding: "1px 6px", fontWeight: 600, lineHeight: "16px",
+          }}>{selected.length}</span>}
+        </div>
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#aaa" strokeWidth="2.5">
+          <path d={open ? "M18 15l-6-6-6 6" : "M6 9l6 6 6-6"}/>
+        </svg>
+      </div>
+      {open && <>
+        <div style={{
+          display: "flex", gap: 5, flexWrap: "wrap",
+          opacity: fixedCam ? .35 : 1, pointerEvents: fixedCam ? "none" : "auto",
+        }}>
+          {CAMERA_PRESETS.map(p => (
+            <button key={p.id} onClick={() => onChange(p.id)} title={p.en} style={{
+              padding: "4px 10px", borderRadius: 14, fontSize: 11, fontWeight: 500, cursor: "pointer",
+              border: selected.includes(p.id) ? "1.5px solid #111" : "1.5px solid #e0e0e0",
+              background: selected.includes(p.id) ? "#111" : "#fff",
+              color: selected.includes(p.id) ? "#fff" : "#666",
+              transition: "all .12s", display: "flex", alignItems: "center", gap: 4,
+            }}>
+              {p.label}
+              {selected.includes(p.id) && <span style={{ fontSize: 13, lineHeight: 1, marginLeft: 1 }}>×</span>}
+            </button>
+          ))}
+        </div>
+        <div style={{
+          display: "flex", alignItems: "center", justifyContent: "space-between",
+          marginTop: 10, paddingTop: 8, borderTop: "1px solid #f4f4f4",
+        }}>
+          <div>
+            <span style={{ fontSize: 12, color: "#444", fontWeight: 500 }}>固定镜头</span>
+            <div style={{ fontSize: 10.5, color: "#aaa", marginTop: 1 }}>禁用所有镜头运动</div>
+          </div>
+          <Toggle on={fixedCam} onChange={v => { onFixedCamChange(v); if (v) onChange(null); }} />
+        </div>
+      </>}
+    </div>
+  );
+}
+
 // ── CreatePanel ──────────────────────────────────────────────────────
 function CreatePanel({ node, onClose, onGenerate }) {
   const { useState: us, useRef: ur, useEffect: ue, useMemo: um } = React;
@@ -245,8 +318,25 @@ function CreatePanel({ node, onClose, onGenerate }) {
   const [generateAudio, setGenerateAudio] = us(node?.generateAudio || node?.generate_audio || false);
   const [returnLastFrame, setReturnLastFrame] = us(node?.returnLastFrame || node?.return_last_frame || false);
   const [webSearch, setWebSearch] = us(!!node?.webSearch || !!node?.tools?.some((t) => t.type === "web_search"));
+  const [selectedPresets, setSelectedPresets] = us(node?.selectedPresets || []);
   const sRef = ur(),eRef = ur(),dragRef = ur(null);
   const [panelPos, setPanelPos] = us(readPanelPos);
+
+  function syncCamTags(nextIds) {
+    const ids = nextIds || [];
+    const tags = ids.map(id => CAMERA_PRESETS.find(p => p.id === id)).filter(Boolean).map(p => "\u300a" + p.tag + "\u300b");
+    const cleaned = prompt.replace(CAM_TAG_RE, "").trim();
+    const next = tags.length ? tags.join("") + " " + cleaned : cleaned;
+    setPrompt(next);
+    return ids;
+  }
+  function togglePreset(id) {
+    if (id === null) { setSelectedPresets([]); return; }
+    setSelectedPresets(prev => {
+      const next = prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id];
+      return syncCamTags(next);
+    });
+  }
 
   const selectedModel = MODELS.find((m) => m.id === model) || MODELS[0];
   const isFast = selectedModel.maxResolution === "720p";
@@ -275,6 +365,7 @@ function CreatePanel({ node, onClose, onGenerate }) {
       returnLastFrame, return_last_frame: returnLastFrame,
       webSearch, tools: webSearch ? [{ type: "web_search" }] : [],
       content,
+      selectedPresets,
       modelLabel: selectedModel.label
     });
   }
@@ -415,13 +506,7 @@ function CreatePanel({ node, onClose, onGenerate }) {
             <span style={{ fontSize: 12, color: "#444", fontWeight: 500 }}>联网搜索</span>
             <Toggle on={webSearch} onChange={setWebSearch} />
           </div>}
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <div>
-              <span style={{ fontSize: 12, color: "#444", fontWeight: 500 }}>固定镜头</span>
-              <div style={{ fontSize: 10.5, color: "#aaa", marginTop: 1 }}>禁用画面镜头运动</div>
-            </div>
-            <Toggle on={fixedCam} onChange={setFixedCam} />
-          </div>
+          <CameraPresets selected={selectedPresets} onChange={togglePreset} fixedCam={fixedCam} onFixedCamChange={setFixedCam} />
         </div>
 
         {/* seed */}
