@@ -285,9 +285,11 @@ function App(){
   const panning=useRef(false);
   const panStart=useRef(null);
   const cvRef=useRef();
+  const pollersRef=useRef({});
   const zoomRef=useRef(zoom);const panRef=useRef(pan);
   useEffect(()=>{zoomRef.current=zoom;},[zoom]);
   useEffect(()=>{panRef.current=pan;},[pan]);
+  useEffect(()=>()=>{Object.values(pollersRef.current).forEach(p=>p?.stop?.());pollersRef.current={};},[]);
 
   const selNode=nodes.find(n=>n.id===selId)||null;
   // Hand mode active if tool=hand OR space-held
@@ -386,6 +388,7 @@ function App(){
       if(e.key==="Escape"){setSelId(null);setPanel(null);}
       if((e.key==="Delete"||e.key==="Backspace")&&selId){
         e.preventDefault();
+        stopPolling(selId);
         setNodes(ns=>ns.filter(n=>n.id!==selId));
         setSelId(null);setPanel(null);
       }
@@ -406,9 +409,10 @@ function App(){
       const existing=nodes.find(n=>n.id===panel.nodeId);
       if(existing){
         const id=existing.id;
-        setNodes(ns=>ns.map(n=>n.id===id?{...n,...params,status:"generating",progress:0,createdAt:Date.now()}:n));
+        stopPolling(id);
+        setNodes(ns=>ns.map(n=>n.id===id?{...n,...params,status:"generating",taskStatus:"queued",statusText:"提交任务中",progress:0,taskId:null,videoUrl:null,errorMessage:null,createdAt:Date.now(),completedAt:null}:n));
         setSelId(id);setPanel(null);
-        simulateGen(id);return;
+        createAndPollTask(id,params);return;
       }
     }
     const id="n"+(Date.now());
@@ -426,36 +430,68 @@ function App(){
       }
       nx=maxR+100;ny=refY;
     }
-    const newNode={id,x:nx,y:ny,status:"generating",progress:0,createdAt:Date.now(),...params};
+    const newNode={id,x:nx,y:ny,status:"generating",taskStatus:"queued",statusText:"提交任务中",progress:0,taskId:null,videoUrl:null,errorMessage:null,createdAt:Date.now(),completedAt:null,...params};
     setNodes(ns=>[...ns,newNode]);
     setSelId(id);setPanel(null);
-    simulateGen(id);
+    createAndPollTask(id,params);
   }
-  function simulateGen(id){
-    let p=0;
-    const t=setInterval(()=>{
-      p+=Math.random()*15+5;
-      if(p>=100){clearInterval(t);setNodes(ns=>ns.map(n=>n.id===id?{...n,status:"done",progress:100}:n));}
-      else setNodes(ns=>ns.map(n=>n.id===id?{...n,progress:Math.round(p)}:n));
-    },400);
+  function stopPolling(id){
+    pollersRef.current[id]?.stop?.();
+    delete pollersRef.current[id];
+  }
+  function createAndPollTask(id,params){
+    const controller=new AbortController();
+    pollersRef.current[id]={stop:()=>controller.abort()};
+    requestCreateVideoTask(params,{signal:controller.signal}).then(task=>{
+      if(controller.signal.aborted)return;
+      const taskId=task.taskId;
+      setNodes(ns=>ns.map(n=>n.id===id?{...n,...nodePatchFromTask(task),taskId:taskId||n.taskId}:n));
+      if(!taskId||TERMINAL_TASK_STATUSES.has(task.status)){stopPolling(id);return;}
+      const poller=startTaskPolling({
+        taskId,
+        signal:controller.signal,
+        onUpdate:(next)=>setNodes(ns=>ns.map(n=>n.id===id?{...n,...nodePatchFromTask(next),taskId}:n)),
+        onDone:()=>stopPolling(id)
+      });
+      pollersRef.current[id]={stop:()=>{poller.stop();controller.abort();}};
+    }).catch(err=>{
+      const task=classifyTaskError(err);
+      if(!task)return;
+      setNodes(ns=>ns.map(n=>n.id===id?{...n,...nodePatchFromTask({taskId:n.taskId,status:task.status,statusLabel:taskStatusLabel(task.status),errorMessage:task.errorMessage})}:n));
+      stopPolling(id);
+    });
   }
 
   function onClickNode(id,wasSelected){
     const n=nodes.find(x=>x.id===id);if(!n)return;
     if(!wasSelected){setSelId(id);setPanel(null);return;}
-    if(n.status==="done")setPanel({type:"detail",nodeId:id});
+    if(n.status==="done"||n.status==="error"||n.status==="cancelled")setPanel({type:"detail",nodeId:id});
     else setPanel({type:"create",nodeId:id});
   }
   function onNodeAction(id,act){
     const n=nodes.find(x=>x.id===id);if(!n)return;
     if(act==="preview")setPreview(n);
-    else if(act==="download")alert("下载 "+(n.title||"video")+".mp4 (mock)");
+    else if(act==="download")downloadVideo(n);
     else if(act==="info")setPanel({type:"detail",nodeId:id});
     else if(act==="delete")deleteNode(id);
   }
 
-  function deleteNode(id){setNodes(ns=>ns.filter(n=>n.id!==id));setSelId(null);setPanel(null);}
+  function deleteNode(id){stopPolling(id);setNodes(ns=>ns.filter(n=>n.id!==id));setSelId(null);setPanel(null);}
   function moveNode(id,pos){setNodes(ns=>ns.map(n=>n.id===id?{...n,...pos}:n));}
+  function openVideo(n){if(n.videoUrl)window.open(n.videoUrl,"_blank","noopener,noreferrer");}
+  function downloadVideo(n){
+    if(!n.videoUrl)return;
+    const a=document.createElement("a");
+    a.href=n.videoUrl;
+    a.download=(n.title||"seedance-video")+".mp4";
+    a.target="_blank";
+    document.body.appendChild(a);a.click();a.remove();
+  }
+  function copyVideoLink(n){
+    if(!n.videoUrl)return;
+    if(navigator.clipboard?.writeText)navigator.clipboard.writeText(n.videoUrl);
+    else window.prompt("复制视频链接",n.videoUrl);
+  }
 
   const tools=[
     {id:"cursor",tip:"选择",icon:<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M5 3l14 9-7 1.5-4 8z"/></svg>},
@@ -559,7 +595,9 @@ function App(){
           node={n}
           onClose={()=>setPanel(null)}
           onPreview={()=>setPreview(n)}
-          onDownload={()=>alert("下载 "+(n.title||"video")+".mp4 (mock)")}
+          onDownload={()=>downloadVideo(n)}
+          onOpen={()=>openVideo(n)}
+          onCopy={()=>copyVideoLink(n)}
           onDelete={()=>deleteNode(n.id)}
           onRegen={()=>setPanel({type:"create",nodeId:n.id})}
         />
@@ -569,14 +607,15 @@ function App(){
       {panel?.type==="history"&&<HistoryPanel
         onClose={()=>setPanel(null)}
         onResumeTask={(task)=>{
-          // Resume polling: create a canvas node from the history task and start polling
+          // Create a canvas node from the history task and start real API polling
           const id="n"+Date.now();
           const[w,h]=window.frameSize(task.ratio||"16:9",task.resolution||"720p");
           const cx=window.innerWidth/2,cy=window.innerHeight/2;
           const nx=(cx-pan.x)/zoom-w/2,ny=(cy-pan.y)/zoom-h/2;
           const newNode={
-            id,x:nx,y:ny,status:"generating",progress:0,
-            createdAt:Date.now(),taskId:task.task_id,
+            id,x:nx,y:ny,status:"generating",taskStatus:task.status,
+            statusText:taskStatusLabel(task.status),progress:task.progress||12,
+            createdAt:Date.now(),taskId:task.taskId,
             mode:"t2v",model:task.model,modelLabel:task.modelLabel||"Seedance",
             ar:task.ratio||"16:9",ratio:task.ratio||"16:9",
             resolution:task.resolution||"720p",duration:task.duration||5,
@@ -584,21 +623,31 @@ function App(){
           };
           setNodes(ns=>[...ns,newNode]);
           setSelId(id);setPanel(null);
-          simulateGen(id);
+          // Start real API polling using HOM-27's startTaskPolling
+          const controller=new AbortController();
+          pollersRef.current[id]={stop:()=>controller.abort()};
+          const poller=startTaskPolling({
+            taskId:task.taskId,
+            signal:controller.signal,
+            onUpdate:(next)=>setNodes(ns=>ns.map(n=>n.id===id?{...n,...nodePatchFromTask(next),taskId:task.taskId}:n)),
+            onDone:()=>{delete pollersRef.current[id];}
+          });
+          pollersRef.current[id]={stop:()=>{poller.stop();controller.abort();}};
         }}
         onViewResult={(task)=>{
-          // Create a done node and open preview
+          // Create a done node on canvas and open detail panel
           const id="n"+Date.now();
           const[w,h]=window.frameSize(task.ratio||"16:9",task.resolution||"720p");
           const cx=window.innerWidth/2,cy=window.innerHeight/2;
           const nx=(cx-pan.x)/zoom-w/2,ny=(cy-pan.y)/zoom-h/2;
           const newNode={
-            id,x:nx,y:ny,status:"done",progress:100,
-            createdAt:Date.now(),taskId:task.task_id,
+            id,x:nx,y:ny,status:"done",taskStatus:"succeeded",
+            statusText:taskStatusLabel("succeeded"),progress:100,
+            createdAt:Date.now(),taskId:task.taskId,videoUrl:task.videoUrl,
             mode:"t2v",model:task.model,modelLabel:task.modelLabel||"Seedance",
             ar:task.ratio||"16:9",ratio:task.ratio||"16:9",
             resolution:task.resolution||"720p",duration:task.duration||5,
-            prompt:task.prompt||"",videoUrl:task.video_url,
+            prompt:task.prompt||"",
           };
           setNodes(ns=>[...ns,newNode]);
           setSelId(id);setPanel({type:"detail",nodeId:id});
