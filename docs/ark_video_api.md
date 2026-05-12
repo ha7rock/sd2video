@@ -123,10 +123,16 @@ from sd2video import WorkflowCallbacks, VideoGenerationWorkflow
 
 workflow = VideoGenerationWorkflow.from_env(
     callbacks=WorkflowCallbacks(
-        on_confirm_delete=lambda task_id, status: status in {"queued", "running"},
+        on_confirm_cancel=lambda task_id, status: status in {"queued", "running"},
+        on_confirm_delete=lambda task_id, status: status in {"succeeded", "failed", "cancelled"},
     )
 )
-workflow.delete(task_id, confirm=True)
+
+# queued/running 任务走取消
+workflow.cancel(task_id, confirm=True)
+
+# 终态历史任务走删除；从列表拿到状态时可传入，避免先创建本地 queued 状态
+workflow.delete(task_id, confirm=True, current_status="succeeded")
 ```
 
 对空任务 ID、路径分隔符、未知本地状态、无权限、任务不存在、重复删除等情况会返回可读错误。

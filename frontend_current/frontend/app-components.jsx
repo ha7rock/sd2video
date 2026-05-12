@@ -60,6 +60,8 @@ function VNode({ node, sel, zoom, onClickNode, onMove, onAction }) {
           {tbBtn(<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>, "下载", "download", node.status !== "done" || !videoUrl)}
           {tbBtn(<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10" /><line x1="12" y1="16" x2="12" y2="12" /><line x1="12" y1="8" x2="12.01" y2="8" /></svg>, "信息", "info")}
           <div className="ntb-sep" />
+          {node.status === "generating" &&
+          tbBtn(<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9" /><path d="M9 9l6 6M15 9l-6 6" /></svg>, "取消生成任务", "cancel")}
           {tbBtn(<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6" /><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" /><path d="M10 11v6M14 11v6" /><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>, "从画布删除", "delete")}
         </div>
       }
@@ -415,6 +417,26 @@ async function requestListTasks({ pageNum = 1, pageSize = 10, statusFilter, sign
   return normalizeListResult(data, pageNum, pageSize);
 }
 
+async function requestDeleteTask(taskId, { currentStatus, signal, config = readBackendConfig() } = {}) {
+  const res = await fetch(`${tasksEndpoint(config)}/${encodeURIComponent(taskId)}`, {
+    method: "DELETE",
+    headers: { "Accept": "application/json", "Content-Type": "application/json" },
+    signal,
+    body: JSON.stringify({ current_status: currentStatus || null })
+  });
+  const text = await res.text();
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch (_) {}
+  if (!res.ok) {
+    const msg = data?.message || data?.error?.message || text || "更新任务失败";
+    const err = new Error(msg);
+    err.status = res.status;
+    err.code = data?.error?.code;
+    throw err;
+  }
+  return normalizeTask(data);
+}
+
 function normalizeListResult(data, pageNum, pageSize) {
   const src = data?.data || data || {};
   const itemsRaw = Array.isArray(src.items) ? src.items : Array.isArray(src.data) ? src.data : [];
@@ -430,7 +452,7 @@ function normalizeListResult(data, pageNum, pageSize) {
 
 function classifyTaskError(err) {
   if (err?.name === "AbortError") return null;
-  if (err?.status === 401 || err?.status === 403) return { status: "auth_error", errorMessage: "后端鉴权失败，请检查服务端 ARK_API_KEY。" };
+  if (err?.status === 401 || err?.status === 403) return { status: "auth_error", errorMessage: "后端鉴权失败，请检查服务端密钥配置。" };
   if (err?.status) return { status: "error", errorMessage: err.message || "后端返回错误，请稍后重试。" };
   return { status: "network_error", errorMessage: "网络请求失败，请检查连接后重试。" };
 }
@@ -830,7 +852,7 @@ function fmtTime(ts) {
   return `${d.getFullYear()}/${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
-function DetailPanel({ node, onClose, onPreview, onDownload, onRegen, onDelete }) {
+function DetailPanel({ node, onClose, onPreview, onDownload, onRegen, onCancel, onDelete }) {
   const refs = [];
   if (node.startImg) refs.push({ src: node.startImg, label: "首帧", kind: "image" });
   if (node.endImg) refs.push({ src: node.endImg, label: "尾帧", kind: "image" });
@@ -988,6 +1010,18 @@ function DetailPanel({ node, onClose, onPreview, onDownload, onRegen, onDelete }
             下载
           </button>
           <button onClick={onRegen} style={{ flex: 1, padding: "9px 0", borderRadius: 9, border: "1.5px solid #e0e0e0", background: "#fff", fontSize: 12.5, fontWeight: 500, cursor: "pointer", color: "#111" }}>重新生成</button>
+        </div>
+        <div style={{ display: "flex", gap: 6 }}>
+          {node.status === "generating" && (
+            <button onClick={onCancel} style={{ flex: 1, padding: "9px 0", borderRadius: 9, border: "1.5px solid #f59e0b", background: "#fffbeb", fontSize: 12.5, fontWeight: 600, cursor: "pointer", color: "#b45309" }}>
+              取消任务
+            </button>
+          )}
+          {(node.status === "done" || node.status === "error" || node.status === "cancelled") && (
+            <button onClick={onDelete} style={{ flex: 1, padding: "9px 0", borderRadius: 9, border: "1.5px solid #fecaca", background: "#fff", fontSize: 12.5, fontWeight: 600, cursor: "pointer", color: "#b91c1c" }}>
+              删除记录
+            </button>
+          )}
         </div>
       </div>
     </div>);
@@ -1241,7 +1275,7 @@ function fmtRelativeTime(ts) {
   return fmtTime(ts);
 }
 
-function HistoryTaskCard({ task, onResume, onViewResult, onSelect }) {
+function HistoryTaskCard({ task, onResume, onViewResult, onCancel, onDelete, onSelect, actionBusy, actionError }) {
   const [copied, setCopied] = React.useState(false);
   const sc = HISTORY_STATUS_COLORS[task.status] || HISTORY_STATUS_COLORS.cancelled;
   const isPending = task.status === "queued" || task.status === "running";
@@ -1282,18 +1316,21 @@ function HistoryTaskCard({ task, onResume, onViewResult, onSelect }) {
       {(task.errorMessage || task.error_message) && (
         <div style={{ fontSize: 11.5, color: "#dc2626", background: "#fef2f2", borderRadius: 7, padding: "6px 10px", marginBottom: 10, lineHeight: 1.4 }}>{task.errorMessage || task.error_message}</div>
       )}
-      <div style={{ display: "flex", gap: 6 }}>
+      {actionError && <div style={{ fontSize: 11.5, color: "#b91c1c", background: "#fff1f2", borderRadius: 7, padding: "6px 10px", marginBottom: 10, lineHeight: 1.4 }}>{actionError}</div>}
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
         <button onClick={handleCopy} style={{ padding: "5px 10px", borderRadius: 7, border: "1px solid #e5e5e5", background: "#fafafa", fontSize: 11, color: "#666", cursor: "pointer" }}>
           {copied ? "已复制" : "复制 ID"}
         </button>
         {isPending && <button onClick={e => { e.stopPropagation(); onResume?.(task); }} style={{ padding: "5px 10px", borderRadius: 7, border: "1px solid #f59e0b", background: "#fffbeb", fontSize: 11, color: "#b45309", cursor: "pointer", fontWeight: 600 }}>恢复轮询</button>}
+        {isPending && <button disabled={!!actionBusy} onClick={e => { e.stopPropagation(); onCancel?.(task); }} style={{ padding: "5px 10px", borderRadius: 7, border: "1px solid #f59e0b", background: "#fff7ed", fontSize: 11, color: "#b45309", cursor: actionBusy ? "not-allowed" : "pointer", fontWeight: 600, opacity: actionBusy ? .55 : 1 }}>{actionBusy === "cancel" ? "取消中…" : "取消"}</button>}
         {isDone && <button onClick={e => { e.stopPropagation(); onViewResult?.(task); }} style={{ padding: "5px 10px", borderRadius: 7, border: "none", background: "#111", fontSize: 11, color: "#fff", cursor: "pointer", fontWeight: 600 }}>查看结果</button>}
+        {!isPending && task.status !== "deleted" && <button disabled={!!actionBusy} onClick={e => { e.stopPropagation(); onDelete?.(task); }} style={{ padding: "5px 10px", borderRadius: 7, border: "1px solid #fecaca", background: "#fff", fontSize: 11, color: "#b91c1c", cursor: actionBusy ? "not-allowed" : "pointer", fontWeight: 600, opacity: actionBusy ? .55 : 1 }}>{actionBusy === "delete" ? "删除中…" : "删除"}</button>}
       </div>
     </div>
   );
 }
 
-function HistoryPanel({ onClose, onResumeTask, onViewResult, backendConfig }) {
+function HistoryPanel({ onClose, onResumeTask, onViewResult, onCancelTask, onDeleteTask, backendConfig }) {
   const { useState: us, useEffect: ue, useMemo: um, useRef: ur } = React;
   const [statusFilter, setStatusFilter] = us("all");
   const [page, setPage] = us(1);
@@ -1302,6 +1339,8 @@ function HistoryPanel({ onClose, onResumeTask, onViewResult, backendConfig }) {
   const [searchQuery, setSearchQuery] = us("");
   const [listResult, setListResult] = us({ items: [], total: 0 });
   const [detailTask, setDetailTask] = us(null);
+  const [actionBusy, setActionBusy] = us(null);
+  const [actionErrors, setActionErrors] = us({});
   const abortRef = ur(null);
   const pageSize = 10;
 
@@ -1340,7 +1379,52 @@ function HistoryPanel({ onClose, onResumeTask, onViewResult, backendConfig }) {
     fetchList(newPage, statusFilter);
   }
 
+  function setTaskActionError(taskId, message) {
+    setActionErrors(prev => ({ ...prev, [taskId]: message }));
+  }
+  function clearTaskActionError(taskId) {
+    setActionErrors(prev => {
+      const next = { ...prev };
+      delete next[taskId];
+      return next;
+    });
+  }
+  async function runHistoryAction(task, action) {
+    if (!task?.taskId || actionBusy) return;
+    const isCancel = action === "cancel";
+    if (isCancel && task.status !== "queued" && task.status !== "running") {
+      setTaskActionError(task.taskId, "当前状态不可取消。");
+      return;
+    }
+    if (!isCancel && (task.status === "queued" || task.status === "running")) {
+      setTaskActionError(task.taskId, "任务仍在进行中，请先取消后再删除。");
+      return;
+    }
+    const confirmed = window.confirm(isCancel ? `确认取消任务 ${task.taskId}？` : `确认删除任务 ${task.taskId}？删除后会从历史列表隐藏。`);
+    if (!confirmed) return;
+    setActionBusy({ taskId: task.taskId, action });
+    clearTaskActionError(task.taskId);
+    try {
+      const nextTask = await requestDeleteTask(task.taskId, { currentStatus: task.status, config: backendConfig });
+      if (isCancel) {
+        setListResult(result => ({ ...result, items: result.items.map(t => t.taskId === task.taskId ? { ...t, ...nextTask } : t) }));
+        setDetailTask(current => current && current.taskId === task.taskId ? { ...current, ...nextTask } : current);
+        onCancelTask?.(nextTask);
+      } else {
+        setListResult(result => ({ ...result, items: result.items.filter(t => t.taskId !== task.taskId), total: Math.max(0, result.total - 1) }));
+        setDetailTask(current => current && current.taskId === task.taskId ? null : current);
+        onDeleteTask?.(task);
+      }
+    } catch (err) {
+      setTaskActionError(task.taskId, err?.message || (isCancel ? "取消任务失败。" : "删除任务失败。"));
+    } finally {
+      setActionBusy(null);
+    }
+  }
+
   if (detailTask) {
+    const detailBusy = actionBusy?.taskId === detailTask.taskId ? actionBusy.action : null;
+    const detailActionError = actionErrors[detailTask.taskId];
     return (
       <div className="floatp" style={{ width: 380 }}>
         <div className="fp-hd">
@@ -1366,9 +1450,12 @@ function HistoryPanel({ onClose, onResumeTask, onViewResult, backendConfig }) {
           </div>
           {detailTask.prompt && <div style={{ marginBottom: 14 }}><div className="fl">提示词</div><div style={{ background: "#f7f7f7", borderRadius: 8, padding: "9px 11px", fontSize: 12.5, color: "#333", lineHeight: 1.55 }}>{detailTask.prompt}</div></div>}
           {(detailTask.errorMessage || detailTask.error_message) && <div style={{ marginBottom: 14 }}><div className="fl">错误信息</div><div style={{ background: "#fef2f2", borderRadius: 8, padding: "9px 11px", fontSize: 12, color: "#dc2626", lineHeight: 1.5 }}>{detailTask.errorMessage || detailTask.error_message}</div></div>}
+          {detailActionError && <div style={{ marginBottom: 14, background: "#fff1f2", borderRadius: 8, padding: "9px 11px", fontSize: 12, color: "#b91c1c", lineHeight: 1.5 }}>{detailActionError}</div>}
           <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
             {(detailTask.status === "queued" || detailTask.status === "running") && <button onClick={() => onResumeTask?.(detailTask)} style={{ flex: 1, padding: "10px 0", borderRadius: 9, border: "none", background: "#f59e0b", fontSize: 13, fontWeight: 600, cursor: "pointer", color: "#fff" }}>恢复轮询</button>}
+            {(detailTask.status === "queued" || detailTask.status === "running") && <button disabled={!!detailBusy} onClick={() => runHistoryAction(detailTask, "cancel")} style={{ flex: 1, padding: "10px 0", borderRadius: 9, border: "1.5px solid #f59e0b", background: "#fffbeb", fontSize: 13, fontWeight: 600, cursor: detailBusy ? "not-allowed" : "pointer", color: "#b45309", opacity: detailBusy ? .55 : 1 }}>{detailBusy === "cancel" ? "取消中…" : "取消任务"}</button>}
             {detailTask.status === "succeeded" && (detailTask.videoUrl || detailTask.video_url) && <button onClick={() => onViewResult?.(detailTask)} style={{ flex: 1, padding: "10px 0", borderRadius: 9, border: "none", background: "#111", fontSize: 13, fontWeight: 600, cursor: "pointer", color: "#fff" }}>查看结果</button>}
+            {detailTask.status !== "queued" && detailTask.status !== "running" && detailTask.status !== "deleted" && <button disabled={!!detailBusy} onClick={() => runHistoryAction(detailTask, "delete")} style={{ flex: 1, padding: "10px 0", borderRadius: 9, border: "1.5px solid #fecaca", background: "#fff", fontSize: 13, fontWeight: 600, cursor: detailBusy ? "not-allowed" : "pointer", color: "#b91c1c", opacity: detailBusy ? .55 : 1 }}>{detailBusy === "delete" ? "删除中…" : "删除记录"}</button>}
           </div>
         </div>
       </div>
@@ -1395,7 +1482,7 @@ function HistoryPanel({ onClose, onResumeTask, onViewResult, backendConfig }) {
         {loading && <div style={{ padding: 40, textAlign: "center", fontSize: 12, color: "#999" }}>加载中…</div>}
         {error && !loading && <div style={{ padding: 40, textAlign: "center", fontSize: 12.5, color: "#666" }}>{error}<br/><button onClick={() => fetchList(page)} style={{ marginTop: 10, padding: "6px 14px", borderRadius: 8, border: "1px solid #ddd", background: "#fff", fontSize: 12, cursor: "pointer", color: "#333" }}>重试</button></div>}
         {!loading && !error && filtered.length === 0 && <div style={{ padding: 40, textAlign: "center", fontSize: 13, color: "#bbb" }}>{searchQuery ? "没有匹配的任务" : "暂无历史任务"}</div>}
-        {!loading && !error && filtered.map(task => <HistoryTaskCard key={task.taskId} task={task} onSelect={setDetailTask} onResume={onResumeTask} onViewResult={onViewResult} />)}
+        {!loading && !error && filtered.map(task => <HistoryTaskCard key={task.taskId} task={task} onSelect={setDetailTask} onResume={onResumeTask} onViewResult={onViewResult} onCancel={(t)=>runHistoryAction(t,"cancel")} onDelete={(t)=>runHistoryAction(t,"delete")} actionBusy={actionBusy?.taskId === task.taskId ? actionBusy.action : null} actionError={actionErrors[task.taskId]} />)}
       </div>
       {!loading && !error && listResult.total > 0 && (
         <div style={{ padding: "10px 18px 14px", borderTop: "1px solid #f0f0f0", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
@@ -1433,6 +1520,7 @@ Object.assign(window, {
   requestListTasks,
   requestTaskStatus,
   requestCreateVideoTask,
+  requestDeleteTask,
   startTaskPolling,
   nodePatchFromTask,
   classifyTaskError,

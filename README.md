@@ -152,7 +152,8 @@ callbacks = WorkflowCallbacks(
     on_status_change=lambda tid, label: print(f"状态变更: {label}"),
     on_succeeded=lambda s: print(f"成功! 视频: {s.video_url}"),
     on_failed=lambda s: print(f"失败: {s.error_message}"),
-    on_confirm_delete=lambda tid, status: True,  # 自动确认删除
+    on_confirm_cancel=lambda tid, status: True,  # 自动确认取消
+    on_confirm_delete=lambda tid, status: True,  # 自动确认删除终态任务
 )
 
 wf = VideoGenerationWorkflow.from_env(config=config, callbacks=callbacks)
@@ -208,11 +209,11 @@ for task in result.items:
 ### 取消/删除任务
 
 ```python
-# 有确认步骤的删除
-state = wf.delete(task_id, confirm=True)
+# queued/running 任务只能取消
+state = wf.cancel(task_id, confirm=True)
 
-# 跳过确认
-state = wf.delete(task_id, confirm=False)
+# succeeded/failed/cancelled 等终态任务才能删除或隐藏
+state = wf.delete(task_id, confirm=True, current_status="succeeded")
 ```
 
 ## 状态说明
