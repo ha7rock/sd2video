@@ -91,6 +91,32 @@ curl http://127.0.0.1:8787/api/v1/tasks
 
 完整前后端契约见 `docs/api_contract.md`。
 
+## 前端面板联调
+
+HOM-22 面板快照在 `frontend_current/frontend/`。启动 mock/dev 后端后，可用静态文件服务打开画布：
+
+```bash
+export SD2VIDEO_MOCK=1
+python3 -m sd2video.server --port 8787
+
+cd frontend_current/frontend
+python3 -m http.server 5173
+```
+
+如后端不在同源地址，可在页面加载前注入：
+
+```html
+<script>window.__SD2VIDEO_API_BASE__ = "http://127.0.0.1:8787";</script>
+```
+
+或在 HTML 里设置：
+
+```html
+<meta name="sd2video-api-base" content="http://127.0.0.1:8787">
+```
+
+前端提交统一调用 `POST /api/v1/tasks`，payload 只包含 `mode + prompt + assets` 等 contract 字段，并为每次提交生成 `client_request_id`。前端不发送 Ark 原始 `content` 数组，不发送 `negative_prompt`，也不接触 `ARK_API_KEY`。
+
 ## 快速使用
 
 ### 完整工作流（推荐）

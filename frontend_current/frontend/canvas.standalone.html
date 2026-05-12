@@ -84,7 +84,9 @@ function VNode({ node, sel, zoom, onClickNode, onMove, onAction }) {
                 <div style={{ width: node.progress + "%", height: "100%", background: "#555", borderRadius: 2, transition: "width .3s" }} />
               </div>
           }
-            <span style={{ fontSize: 10, color: "rgba(0,0,0,0.4)" }}>生成中 {node.progress || 0}%</span>
+            <span style={{ fontSize: 10, color: "rgba(0,0,0,0.4)", maxWidth: "90%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {node.taskId ? `任务 ${node.taskId}` : `生成中 ${node.progress || 0}%`}
+            </span>
           </div>
         }
         {node.status === "done" &&
@@ -123,6 +125,183 @@ const MODE_OPTIONS = [
 const MODE_LABELS = Object.fromEntries(MODE_OPTIONS);
 const ARS = ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "adaptive"];
 const RESS = ["480p", "720p", "1080p"];
+const BACKEND_CONFIG_KEY = "sd2video:backend-config";
+const BACKEND_MODES = new Set(["mock", "dev", "real"]);
+const CREATE_PATH = "/api/v1/tasks";
+
+function readBackendConfig() {
+  let saved = {};
+  try { saved = JSON.parse(window.localStorage.getItem(BACKEND_CONFIG_KEY) || "{}"); } catch (_) {}
+  const inline = window.SD2VIDEO_BACKEND || {};
+  const metaBase = document.querySelector('meta[name="sd2video-api-base"]')?.content || "";
+  const mode = inline.mode || saved.mode || "dev";
+  const apiBase = window.__SD2VIDEO_API_BASE__ || inline.apiBase || metaBase || saved.apiBase || "";
+  const createPath = inline.createPath || saved.createPath || CREATE_PATH;
+  return {
+    mode: BACKEND_MODES.has(mode) ? mode : "mock",
+    apiBase: String(apiBase || "").replace(/\/+$/, ""),
+    createPath: createPath.startsWith("/") ? createPath : "/" + createPath
+  };
+}
+
+function createEndpoint(config) {
+  return `${config.apiBase || ""}${config.createPath || CREATE_PATH}`;
+}
+
+function mediaUrlOf(item) {
+  return typeof item === "string" ? item : item?.url;
+}
+
+function isBackendUsableUrl(url, config) {
+  return /^https?:\/\//.test(url) || /^asset:\/\//.test(url) || /^data:image\/[^;]+;base64,/.test(url);
+}
+
+function firstInvalidMedia(items, config) {
+  return (items || []).map(mediaUrlOf).find((url) => !url || !isBackendUsableUrl(url, config));
+}
+
+function validateCreateTaskParams(params, config = readBackendConfig()) {
+  const errors = [];
+  const model = MODELS.find((m) => m.id === params.model);
+  const prompt = (params.prompt || "").trim();
+  const seed = params.seed === null || params.seed === "" ? null : Number(params.seed);
+  const hasVisualRef = (params.refImages || []).length > 0 || (params.refVideos || []).length > 0;
+
+  if (!prompt && params.mode === "t2v") {
+    errors.push({ field: "prompt", message: "提示词不能为空" });
+  }
+  if (!model) errors.push({ field: "model", message: "请选择有效模型" });
+  if (!ARS.includes(params.ar || params.ratio)) errors.push({ field: "ratio", message: "请选择有效画面比例" });
+  if (!RESS.includes(params.resolution)) errors.push({ field: "resolution", message: "请选择有效分辨率" });
+  if (model?.maxResolution === "720p" && params.resolution === "1080p") {
+    errors.push({ field: "resolution", message: "Seedance 2.0 Fast 不支持 1080p" });
+  }
+  if (!Number.isInteger(params.duration) || params.duration < 4 || params.duration > 15) {
+    errors.push({ field: "duration", message: "时长必须在 4-15 秒之间" });
+  }
+  if (seed !== null && (!Number.isInteger(seed) || seed < -1 || seed > 2 ** 32 - 1)) {
+    errors.push({ field: "seed", message: "随机种子必须是 -1 到 2^32-1 的整数" });
+  }
+  if (params.mode === "first_frame" && !params.startImg) {
+    errors.push({ field: "startImg", message: "首帧模式需要上传首帧图片" });
+  }
+  if (params.mode === "first_last") {
+    if (!params.startImg) errors.push({ field: "startImg", message: "首尾帧模式需要首帧图片" });
+    if (!params.endImg) errors.push({ field: "endImg", message: "首尾帧模式需要尾帧图片" });
+  }
+  if (params.mode === "reference" && !hasVisualRef) {
+    errors.push({ field: "reference", message: "参考生成至少需要 1 个参考图或参考视频" });
+  }
+  if (params.mode === "edit" && (params.editVideo || []).length !== 1) {
+    errors.push({ field: "editVideo", message: "编辑视频需要且只能选择 1 个待编辑视频" });
+  }
+  if (params.mode === "extend" && ((params.refVideos || []).length < 1 || (params.refVideos || []).length > 3)) {
+    errors.push({ field: "refVideos", message: "延长视频需要 1-3 个视频片段" });
+  }
+  if ((params.refAudios || []).length > 0 && !hasVisualRef && params.mode === "reference") {
+    errors.push({ field: "refAudios", message: "音频参考必须搭配图片或视频素材" });
+  }
+  if (params.webSearch && params.mode !== "t2v") {
+    errors.push({ field: "web_search", message: "联网搜索仅支持文生视频模式" });
+  }
+  for (const [field, value] of [
+    ["startImg", params.startImg],
+    ["endImg", params.endImg],
+    ["refImages", firstInvalidMedia(params.refImages, config)],
+    ["refVideos", firstInvalidMedia(params.refVideos, config)],
+    ["refAudios", firstInvalidMedia(params.refAudios, config)],
+    ["editVideo", firstInvalidMedia(params.editVideo, config)]
+  ]) {
+    if (value && !isBackendUsableUrl(value, config)) {
+      errors.push({ field, message: "素材必须先上传为 http(s)、asset:// 或图片 base64 地址，不能直接提交本地 blob 地址" });
+    }
+  }
+  return errors;
+}
+
+function mediaUrls(items) {
+  return (items || []).map(mediaUrlOf).filter(Boolean);
+}
+
+function buildAssets(params) {
+  return {
+    first_frame: params.startImg || null,
+    last_frame: params.endImg || null,
+    reference_images: mediaUrls(params.refImages),
+    reference_videos: mediaUrls(params.refVideos),
+    reference_audios: mediaUrls(params.refAudios),
+    edit_video: mediaUrls(params.editVideo)[0] || null
+  };
+}
+
+function createClientRequestId() {
+  if (window.crypto?.randomUUID) return window.crypto.randomUUID();
+  return "panel-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10);
+}
+
+function buildCreateTaskPayload(params) {
+  const seed = params.seed === null || params.seed === "" ? null : Number(params.seed);
+  return {
+    mode: params.mode,
+    model: params.model,
+    prompt: (params.prompt || "").trim(),
+    ratio: params.ratio || params.ar,
+    resolution: params.resolution,
+    duration: params.duration,
+    seed,
+    camera_fixed: !!params.camera_fixed,
+    watermark: !!params.watermark,
+    generate_audio: !!params.generate_audio,
+    return_last_frame: !!params.return_last_frame,
+    web_search: !!params.webSearch,
+    assets: buildAssets(params),
+    client_request_id: params.client_request_id || createClientRequestId()
+  };
+}
+
+function extractTaskId(data) {
+  return data?.task_id || data?.id || data?.task?.id || data?.data?.task_id || data?.data?.id || null;
+}
+
+function formatCreateError(error) {
+  if (error?.field && error?.message) return `${error.field}: ${error.message}`;
+  return error?.message || "创建任务失败，请稍后重试";
+}
+
+async function createVideoTask(payload, config = readBackendConfig()) {
+  const res = await fetch(createEndpoint(config), {
+    method: "POST",
+    headers: {
+      "Accept": "application/json",
+      "Content-Type": "application/json",
+      "X-Client-Request-Id": payload.client_request_id
+    },
+    body: JSON.stringify(payload)
+  });
+  const text = await res.text();
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch (_) {}
+  if (!res.ok) {
+    if (res.status === 409 && data?.error?.code === "duplicate_request" && data?.existing?.task_id) {
+      return {
+        task_id: data.existing.task_id,
+        status: data.existing.status || "queued",
+        duplicate: true,
+        backend_mode: config.mode
+      };
+    }
+    const msg = data?.message || data?.error?.message || data?.detail || `后端返回 ${res.status}`;
+    const err = new Error(msg);
+    err.status = res.status;
+    err.field = data?.error?.field;
+    err.code = data?.error?.code;
+    err.response = data || text;
+    throw err;
+  }
+  const taskId = extractTaskId(data);
+  if (!taskId) throw new Error("后端创建任务响应缺少 task_id");
+  return { ...(data || {}), task_id: taskId, backend_mode: config.mode };
+}
 
 function Pill({ label, on, onClick, disabled }) {
   return <button onClick={disabled ? undefined : onClick} disabled={disabled} className={"pill" + (on ? " on" : "") + (disabled ? " off" : "")}>{label}</button>;
@@ -179,30 +358,6 @@ function MediaPicker({ label, accept, kind, items, onChange, max = 1 }) {
   );
 }
 
-function buildContent({ mode, prompt, startImg, endImg, refImages, refVideos, refAudios, editVideo }) {
-  const content = [];
-  if (prompt.trim()) content.push({ type: "text", text: prompt.trim() });
-  if (mode === "first_frame" && startImg) content.push({ type: "image_url", image_url: { url: startImg }, role: "first_frame" });
-  if (mode === "first_last") {
-    if (startImg) content.push({ type: "image_url", image_url: { url: startImg }, role: "first_frame" });
-    if (endImg) content.push({ type: "image_url", image_url: { url: endImg }, role: "last_frame" });
-  }
-  if (mode === "reference") {
-    refImages.forEach((it) => content.push({ type: "image_url", image_url: { url: it.url }, role: "reference_image" }));
-    refVideos.forEach((it) => content.push({ type: "video_url", video_url: { url: it.url }, role: "reference_video" }));
-    refAudios.forEach((it) => content.push({ type: "audio_url", audio_url: { url: it.url }, role: "reference_audio" }));
-  }
-  if (mode === "edit") {
-    editVideo.forEach((it) => content.push({ type: "video_url", video_url: { url: it.url }, role: "reference_video" }));
-    refImages.forEach((it) => content.push({ type: "image_url", image_url: { url: it.url }, role: "reference_image" }));
-    refAudios.forEach((it) => content.push({ type: "audio_url", audio_url: { url: it.url }, role: "reference_audio" }));
-  }
-  if (mode === "extend") {
-    refVideos.forEach((it) => content.push({ type: "video_url", video_url: { url: it.url }, role: "reference_video" }));
-  }
-  return content;
-}
-
 const PANEL_POS_KEY = "sd2video:create-panel-position";
 function defaultPanelPos() {
   return {
@@ -231,8 +386,8 @@ function savePanelPos(pos) {
 }
 
 // ── CreatePanel ──────────────────────────────────────────────────────
-function CreatePanel({ node, onClose, onGenerate }) {
-  const { useState: us, useRef: ur, useEffect: ue, useMemo: um } = React;
+function CreatePanel({ node, onClose, onGenerate, backendConfig }) {
+  const { useState: us, useRef: ur, useEffect: ue } = React;
   const [mode, setMode] = us(node?.mode || "t2v");
   const [model, setModel] = us(node?.model || MODELS[0].id);
   const [prompt, setPrompt] = us(node?.prompt || "");
@@ -253,6 +408,8 @@ function CreatePanel({ node, onClose, onGenerate }) {
   const [generateAudio, setGenerateAudio] = us(node?.generateAudio || node?.generate_audio || false);
   const [returnLastFrame, setReturnLastFrame] = us(node?.returnLastFrame || node?.return_last_frame || false);
   const [webSearch, setWebSearch] = us(!!node?.webSearch || !!node?.tools?.some((t) => t.type === "web_search"));
+  const [submitting, setSubmitting] = us(false);
+  const [submitError, setSubmitError] = us("");
   const sRef = ur(),eRef = ur(),dragRef = ur(null);
   const [panelPos, setPanelPos] = us(readPanelPos);
 
@@ -261,30 +418,43 @@ function CreatePanel({ node, onClose, onGenerate }) {
 
   ue(() => {if (isFast && res === "1080p") setRes("720p");}, [isFast, res]);
 
-  const content = um(() => buildContent({ mode, prompt, startImg, endImg, refImages, refVideos, refAudios, editVideo }),
-  [mode, prompt, startImg, endImg, refImages, refVideos, refAudios, editVideo]);
   const hasPrompt = !!prompt.trim();
   const hasVisualRef = refImages.length > 0 || refVideos.length > 0;
+  const panelParams = {
+    mode, model, prompt, neg, ar, ratio: ar, resolution: res, duration: dur,
+    startImg, endImg, refImages, refVideos, refAudios, editVideo,
+    seed: seed || null, watermark, fixedCam, camera_fixed: fixedCam,
+    generateAudio, generate_audio: generateAudio,
+    returnLastFrame, return_last_frame: returnLastFrame,
+    webSearch,
+    modelLabel: selectedModel.label
+  };
+  const validationErrors = validateCreateTaskParams(panelParams, backendConfig || readBackendConfig());
+  const firstError = validationErrors[0];
   const ok =
     mode === "t2v" ? hasPrompt :
     mode === "first_frame" ? !!startImg :
     mode === "first_last" ? !!startImg && !!endImg :
-    mode === "reference" ? hasPrompt && hasVisualRef :
-    mode === "edit" ? hasPrompt && editVideo.length === 1 :
-    mode === "extend" ? hasPrompt && refVideos.length > 0 :
+    mode === "reference" ? hasVisualRef :
+    mode === "edit" ? editVideo.length === 1 :
+    mode === "extend" ? refVideos.length > 0 :
     false;
 
-  function go() {
-    onGenerate({
-      mode, model, prompt, neg, ar, ratio: ar, resolution: res, duration: dur,
-      startImg, endImg, refImages, refVideos, refAudios, editVideo,
-      seed: seed || null, watermark, fixedCam, camera_fixed: fixedCam,
-      generateAudio, generate_audio: generateAudio,
-      returnLastFrame, return_last_frame: returnLastFrame,
-      webSearch, tools: webSearch ? [{ type: "web_search" }] : [],
-      content,
-      modelLabel: selectedModel.label
-    });
+  async function go() {
+    if (submitting) return;
+    if (!ok || firstError) {
+      setSubmitError(firstError?.message || "请补齐必填参数");
+      return;
+    }
+    setSubmitting(true);
+    setSubmitError("");
+    try {
+      await onGenerate(panelParams);
+    } catch (err) {
+      setSubmitError(formatCreateError(err));
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   function startDrag(e) {
@@ -447,9 +617,19 @@ function CreatePanel({ node, onClose, onGenerate }) {
 
       </div>
       <div className="panel-footer">
-        <button onClick={go} disabled={!ok} className={"btn-gen" + (ok ? " ok" : " no")}>
+        {(submitError || firstError) && (
+          <div style={{ fontSize: 11, color: "#b91c1c", lineHeight: 1.45, marginBottom: 8 }}>
+            {submitError || firstError.message}
+          </div>
+        )}
+        {backendConfig?.mode && (
+          <div style={{ fontSize: 10.5, color: "#aaa", marginBottom: 7, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            后端：{backendConfig.mode}{backendConfig.mode !== "mock" ? ` · ${createEndpoint(backendConfig)}` : ""}
+          </div>
+        )}
+        <button onClick={go} disabled={!ok || !!firstError || submitting} className={"btn-gen" + (ok && !firstError && !submitting ? " ok" : " no")}>
           <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 17l-6.2 4.3 2.4-7.4L2 9.4h7.6z" /></svg>
-          生成视频
+          {submitting ? "提交中…" : "生成视频"}
         </button>
       </div>
     </div>);
@@ -534,6 +714,8 @@ function DetailPanel({ node, onClose, onPreview, onDownload, onRegen, onDelete }
             ["比例", node.ar],
             ["分辨率", node.resolution],
             ["时长", node.duration + "s"],
+            ...(node.taskId ? [["任务 ID", node.taskId]] : []),
+            ...(node.backendMode ? [["后端", node.backendMode]] : []),
             ["模式", MODE_LABELS[node.mode] || "视频生成"],
             ["水印", node.watermark ? "开" : "关"],
             ["固定镜头", node.fixedCam ? "开" : "关"],
@@ -782,7 +964,23 @@ function AssetsPanel({ onClose, nodes }) {
 
 }
 
-Object.assign(window, { VNode, CreatePanel, DetailPanel, PreviewModal, AgentPanel, AssetsPanel, frameSize, FRAME_AR });
+Object.assign(window, {
+  VNode,
+  CreatePanel,
+  DetailPanel,
+  PreviewModal,
+  AgentPanel,
+  AssetsPanel,
+  frameSize,
+  FRAME_AR,
+  readBackendConfig,
+  createEndpoint,
+  validateCreateTaskParams,
+  buildCreateTaskPayload,
+  buildAssets,
+  createVideoTask,
+  formatCreateError
+});
 
 </script>
 <template id="__bundler_thumbnail" data-bg-color="#f1f1f1">
@@ -1060,7 +1258,9 @@ function App(){
   const[panActive,setPanActive]=useState(false);
   const[panel,setPanel]=useState(null);
   const[preview,setPreview]=useState(null);
+  const[backendConfig]=useState(()=>window.readBackendConfig());
   const panning=useRef(false);
+  const createInFlight=useRef(false);
   const panStart=useRef(null);
   const cvRef=useRef();
   const zoomRef=useRef(zoom);const panRef=useRef(pan);
@@ -1179,14 +1379,36 @@ function App(){
     return()=>{window.removeEventListener("keydown",onKD);window.removeEventListener("keyup",onKU);window.removeEventListener("mouseup",onWinUp);window.removeEventListener("blur",onWinUp);};
   },[selId]);
 
-  function addNode(params){
+  async function addNode(params){
+    if(createInFlight.current)throw new Error("任务正在提交，请稍候");
+    const validationErrors=window.validateCreateTaskParams(params,backendConfig);
+    if(validationErrors.length){
+      const err=new Error(validationErrors[0].message);
+      err.field=validationErrors[0].field;
+      throw err;
+    }
+    createInFlight.current=true;
+    const payload=window.buildCreateTaskPayload(params);
+    try{
+      const created=await window.createVideoTask(payload,backendConfig);
+      const taskId=created.task_id;
+      const taskPatch={
+        ...params,
+        status:"generating",
+        progress:0,
+        taskId,
+        task_id:taskId,
+        backendMode:created.backend_mode||backendConfig.mode,
+        rawCreate:created,
+        createdAt:Date.now()
+      };
     if(panel?.nodeId){
       const existing=nodes.find(n=>n.id===panel.nodeId);
       if(existing){
         const id=existing.id;
-        setNodes(ns=>ns.map(n=>n.id===id?{...n,...params,status:"generating",progress:0,createdAt:Date.now()}:n));
+        setNodes(ns=>ns.map(n=>n.id===id?{...n,...taskPatch}:n));
         setSelId(id);setPanel(null);
-        simulateGen(id);return;
+        return created;
       }
     }
     const id="n"+(Date.now());
@@ -1204,10 +1426,13 @@ function App(){
       }
       nx=maxR+100;ny=refY;
     }
-    const newNode={id,x:nx,y:ny,status:"generating",progress:0,createdAt:Date.now(),...params};
+    const newNode={id,x:nx,y:ny,...taskPatch};
     setNodes(ns=>[...ns,newNode]);
     setSelId(id);setPanel(null);
-    simulateGen(id);
+    return created;
+    }finally{
+      createInFlight.current=false;
+    }
   }
   function simulateGen(id){
     let p=0;
@@ -1279,7 +1504,11 @@ function App(){
           </div>
           <div className="tb-title">未命名画布 <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{opacity:.4}}><path d="M6 9l6 6 6-6"/></svg></div>
         </div>
-        <div className="tb-right"></div>
+        <div className="tb-right">
+          <div className="btn-white" title={backendConfig.mode==="mock"?"当前使用本地 mock 后端，不会访问真实服务":window.createEndpoint?.(backendConfig)||""}>
+            {backendConfig.mode==="mock"?"Mock 后端":backendConfig.mode==="dev"?"Dev 后端":"真实后端"}
+          </div>
+        </div>
       </div>
 
       {/* Bottom toolbar */}
@@ -1325,6 +1554,7 @@ function App(){
           node={nodes.find(n=>n.id===panel.nodeId)}
           onClose={()=>setPanel(null)}
           onGenerate={addNode}
+          backendConfig={backendConfig}
         />
       )}
       {panel?.type==="detail"&&(()=>{const n=nodes.find(x=>x.id===panel.nodeId);return n&&(

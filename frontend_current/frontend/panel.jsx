@@ -122,21 +122,21 @@ function CreateVideoPanel({ node, onClose, onGenerate, onNodeUpdate }) {
     false;
 
   function handleGenerate() {
-    const content = [];
-    if (prompt.trim()) content.push({ type:"text", text:prompt.trim() });
-    if (mode === "first_frame" && startImg) content.push({ type:"image_url", image_url:{ url:startImg }, role:"first_frame" });
-    if (mode === "first_last") {
-      if (startImg) content.push({ type:"image_url", image_url:{ url:startImg }, role:"first_frame" });
-      if (endImg) content.push({ type:"image_url", image_url:{ url:endImg }, role:"last_frame" });
-    }
     onGenerate({
       mode, model, prompt, negPrompt, ar, ratio:ar, resolution,
       duration: parseInt(duration), startImg, endImg,
       seed: seed || null, watermark, cameraCtrl, camera_fixed:cameraCtrl,
       generateAudio, generate_audio:generateAudio,
       returnLastFrame, return_last_frame:returnLastFrame,
-      tools: webSearch ? [{ type:"web_search" }] : [],
-      content,
+      webSearch, web_search:webSearch,
+      assets: {
+        first_frame: startImg || null,
+        last_frame: endImg || null,
+        reference_images: [],
+        reference_videos: [],
+        reference_audios: [],
+        edit_video: null,
+      },
       modelLabel: selectedModel?.label || "Seedance",
     });
   }

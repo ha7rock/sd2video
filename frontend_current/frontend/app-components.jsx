@@ -1,6 +1,5 @@
 // ── Frame sizing: depends on aspect ratio AND resolution ───────────────
 const FRAME_AR = { "16:9": [16, 9], "9:16": [9, 16], "1:1": [1, 1], "4:3": [4, 3], "3:4": [3, 4], "21:9": [21, 9], adaptive: [16, 9] };
-const STATUS_LABELS = { queued: "排队中", running: "生成中", succeeded: "已完成", failed: "生成失败", cancelled: "已取消", deleted: "已删除" };
 const RES_SCALE = { "480p": 0.62, "720p": 0.82, "1080p": 1.0 };
 const MAX_DIM = 240;
 function frameSize(ar, res) {
@@ -76,7 +75,9 @@ function VNode({ node, sel, zoom, onClickNode, onMove, onAction }) {
                 <div style={{ width: node.progress + "%", height: "100%", background: "#555", borderRadius: 2, transition: "width .3s" }} />
               </div>
           }
-            <span style={{ fontSize: 10, color: "rgba(0,0,0,0.4)" }}>生成中 {node.progress || 0}%</span>
+            <span style={{ fontSize: 10, color: "rgba(0,0,0,0.4)", maxWidth: "90%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {node.taskId ? `任务 ${node.taskId}` : `生成中 ${node.progress || 0}%`}
+            </span>
           </div>
         }
         {node.status === "done" &&
@@ -115,6 +116,183 @@ const MODE_OPTIONS = [
 const MODE_LABELS = Object.fromEntries(MODE_OPTIONS);
 const ARS = ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "adaptive"];
 const RESS = ["480p", "720p", "1080p"];
+const BACKEND_CONFIG_KEY = "sd2video:backend-config";
+const BACKEND_MODES = new Set(["mock", "dev", "real"]);
+const CREATE_PATH = "/api/v1/tasks";
+
+function readBackendConfig() {
+  let saved = {};
+  try { saved = JSON.parse(window.localStorage.getItem(BACKEND_CONFIG_KEY) || "{}"); } catch (_) {}
+  const inline = window.SD2VIDEO_BACKEND || {};
+  const metaBase = document.querySelector('meta[name="sd2video-api-base"]')?.content || "";
+  const mode = inline.mode || saved.mode || "dev";
+  const apiBase = window.__SD2VIDEO_API_BASE__ || inline.apiBase || metaBase || saved.apiBase || "";
+  const createPath = inline.createPath || saved.createPath || CREATE_PATH;
+  return {
+    mode: BACKEND_MODES.has(mode) ? mode : "mock",
+    apiBase: String(apiBase || "").replace(/\/+$/, ""),
+    createPath: createPath.startsWith("/") ? createPath : "/" + createPath
+  };
+}
+
+function createEndpoint(config) {
+  return `${config.apiBase || ""}${config.createPath || CREATE_PATH}`;
+}
+
+function mediaUrlOf(item) {
+  return typeof item === "string" ? item : item?.url;
+}
+
+function isBackendUsableUrl(url, config) {
+  return /^https?:\/\//.test(url) || /^asset:\/\//.test(url) || /^data:image\/[^;]+;base64,/.test(url);
+}
+
+function firstInvalidMedia(items, config) {
+  return (items || []).map(mediaUrlOf).find((url) => !url || !isBackendUsableUrl(url, config));
+}
+
+function validateCreateTaskParams(params, config = readBackendConfig()) {
+  const errors = [];
+  const model = MODELS.find((m) => m.id === params.model);
+  const prompt = (params.prompt || "").trim();
+  const seed = params.seed === null || params.seed === "" ? null : Number(params.seed);
+  const hasVisualRef = (params.refImages || []).length > 0 || (params.refVideos || []).length > 0;
+
+  if (!prompt && params.mode === "t2v") {
+    errors.push({ field: "prompt", message: "提示词不能为空" });
+  }
+  if (!model) errors.push({ field: "model", message: "请选择有效模型" });
+  if (!ARS.includes(params.ar || params.ratio)) errors.push({ field: "ratio", message: "请选择有效画面比例" });
+  if (!RESS.includes(params.resolution)) errors.push({ field: "resolution", message: "请选择有效分辨率" });
+  if (model?.maxResolution === "720p" && params.resolution === "1080p") {
+    errors.push({ field: "resolution", message: "Seedance 2.0 Fast 不支持 1080p" });
+  }
+  if (!Number.isInteger(params.duration) || params.duration < 4 || params.duration > 15) {
+    errors.push({ field: "duration", message: "时长必须在 4-15 秒之间" });
+  }
+  if (seed !== null && (!Number.isInteger(seed) || seed < -1 || seed > 2 ** 32 - 1)) {
+    errors.push({ field: "seed", message: "随机种子必须是 -1 到 2^32-1 的整数" });
+  }
+  if (params.mode === "first_frame" && !params.startImg) {
+    errors.push({ field: "startImg", message: "首帧模式需要上传首帧图片" });
+  }
+  if (params.mode === "first_last") {
+    if (!params.startImg) errors.push({ field: "startImg", message: "首尾帧模式需要首帧图片" });
+    if (!params.endImg) errors.push({ field: "endImg", message: "首尾帧模式需要尾帧图片" });
+  }
+  if (params.mode === "reference" && !hasVisualRef) {
+    errors.push({ field: "reference", message: "参考生成至少需要 1 个参考图或参考视频" });
+  }
+  if (params.mode === "edit" && (params.editVideo || []).length !== 1) {
+    errors.push({ field: "editVideo", message: "编辑视频需要且只能选择 1 个待编辑视频" });
+  }
+  if (params.mode === "extend" && ((params.refVideos || []).length < 1 || (params.refVideos || []).length > 3)) {
+    errors.push({ field: "refVideos", message: "延长视频需要 1-3 个视频片段" });
+  }
+  if ((params.refAudios || []).length > 0 && !hasVisualRef && params.mode === "reference") {
+    errors.push({ field: "refAudios", message: "音频参考必须搭配图片或视频素材" });
+  }
+  if (params.webSearch && params.mode !== "t2v") {
+    errors.push({ field: "web_search", message: "联网搜索仅支持文生视频模式" });
+  }
+  for (const [field, value] of [
+    ["startImg", params.startImg],
+    ["endImg", params.endImg],
+    ["refImages", firstInvalidMedia(params.refImages, config)],
+    ["refVideos", firstInvalidMedia(params.refVideos, config)],
+    ["refAudios", firstInvalidMedia(params.refAudios, config)],
+    ["editVideo", firstInvalidMedia(params.editVideo, config)]
+  ]) {
+    if (value && !isBackendUsableUrl(value, config)) {
+      errors.push({ field, message: "素材必须先上传为 http(s)、asset:// 或图片 base64 地址，不能直接提交本地 blob 地址" });
+    }
+  }
+  return errors;
+}
+
+function mediaUrls(items) {
+  return (items || []).map(mediaUrlOf).filter(Boolean);
+}
+
+function buildAssets(params) {
+  return {
+    first_frame: params.startImg || null,
+    last_frame: params.endImg || null,
+    reference_images: mediaUrls(params.refImages),
+    reference_videos: mediaUrls(params.refVideos),
+    reference_audios: mediaUrls(params.refAudios),
+    edit_video: mediaUrls(params.editVideo)[0] || null
+  };
+}
+
+function createClientRequestId() {
+  if (window.crypto?.randomUUID) return window.crypto.randomUUID();
+  return "panel-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10);
+}
+
+function buildCreateTaskPayload(params) {
+  const seed = params.seed === null || params.seed === "" ? null : Number(params.seed);
+  return {
+    mode: params.mode,
+    model: params.model,
+    prompt: (params.prompt || "").trim(),
+    ratio: params.ratio || params.ar,
+    resolution: params.resolution,
+    duration: params.duration,
+    seed,
+    camera_fixed: !!params.camera_fixed,
+    watermark: !!params.watermark,
+    generate_audio: !!params.generate_audio,
+    return_last_frame: !!params.return_last_frame,
+    web_search: !!params.webSearch,
+    assets: buildAssets(params),
+    client_request_id: params.client_request_id || createClientRequestId()
+  };
+}
+
+function extractTaskId(data) {
+  return data?.task_id || data?.id || data?.task?.id || data?.data?.task_id || data?.data?.id || null;
+}
+
+function formatCreateError(error) {
+  if (error?.field && error?.message) return `${error.field}: ${error.message}`;
+  return error?.message || "创建任务失败，请稍后重试";
+}
+
+async function createVideoTask(payload, config = readBackendConfig()) {
+  const res = await fetch(createEndpoint(config), {
+    method: "POST",
+    headers: {
+      "Accept": "application/json",
+      "Content-Type": "application/json",
+      "X-Client-Request-Id": payload.client_request_id
+    },
+    body: JSON.stringify(payload)
+  });
+  const text = await res.text();
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch (_) {}
+  if (!res.ok) {
+    if (res.status === 409 && data?.error?.code === "duplicate_request" && data?.existing?.task_id) {
+      return {
+        task_id: data.existing.task_id,
+        status: data.existing.status || "queued",
+        duplicate: true,
+        backend_mode: config.mode
+      };
+    }
+    const msg = data?.message || data?.error?.message || data?.detail || `后端返回 ${res.status}`;
+    const err = new Error(msg);
+    err.status = res.status;
+    err.field = data?.error?.field;
+    err.code = data?.error?.code;
+    err.response = data || text;
+    throw err;
+  }
+  const taskId = extractTaskId(data);
+  if (!taskId) throw new Error("后端创建任务响应缺少 task_id");
+  return { ...(data || {}), task_id: taskId, backend_mode: config.mode };
+}
 
 function Pill({ label, on, onClick, disabled }) {
   return <button onClick={disabled ? undefined : onClick} disabled={disabled} className={"pill" + (on ? " on" : "") + (disabled ? " off" : "")}>{label}</button>;
@@ -171,30 +349,6 @@ function MediaPicker({ label, accept, kind, items, onChange, max = 1 }) {
   );
 }
 
-function buildContent({ mode, prompt, startImg, endImg, refImages, refVideos, refAudios, editVideo }) {
-  const content = [];
-  if (prompt.trim()) content.push({ type: "text", text: prompt.trim() });
-  if (mode === "first_frame" && startImg) content.push({ type: "image_url", image_url: { url: startImg }, role: "first_frame" });
-  if (mode === "first_last") {
-    if (startImg) content.push({ type: "image_url", image_url: { url: startImg }, role: "first_frame" });
-    if (endImg) content.push({ type: "image_url", image_url: { url: endImg }, role: "last_frame" });
-  }
-  if (mode === "reference") {
-    refImages.forEach((it) => content.push({ type: "image_url", image_url: { url: it.url }, role: "reference_image" }));
-    refVideos.forEach((it) => content.push({ type: "video_url", video_url: { url: it.url }, role: "reference_video" }));
-    refAudios.forEach((it) => content.push({ type: "audio_url", audio_url: { url: it.url }, role: "reference_audio" }));
-  }
-  if (mode === "edit") {
-    editVideo.forEach((it) => content.push({ type: "video_url", video_url: { url: it.url }, role: "reference_video" }));
-    refImages.forEach((it) => content.push({ type: "image_url", image_url: { url: it.url }, role: "reference_image" }));
-    refAudios.forEach((it) => content.push({ type: "audio_url", audio_url: { url: it.url }, role: "reference_audio" }));
-  }
-  if (mode === "extend") {
-    refVideos.forEach((it) => content.push({ type: "video_url", video_url: { url: it.url }, role: "reference_video" }));
-  }
-  return content;
-}
-
 const PANEL_POS_KEY = "sd2video:create-panel-position";
 function defaultPanelPos() {
   return {
@@ -223,8 +377,8 @@ function savePanelPos(pos) {
 }
 
 // ── CreatePanel ──────────────────────────────────────────────────────
-function CreatePanel({ node, onClose, onGenerate }) {
-  const { useState: us, useRef: ur, useEffect: ue, useMemo: um } = React;
+function CreatePanel({ node, onClose, onGenerate, backendConfig }) {
+  const { useState: us, useRef: ur, useEffect: ue } = React;
   const [mode, setMode] = us(node?.mode || "t2v");
   const [model, setModel] = us(node?.model || MODELS[0].id);
   const [prompt, setPrompt] = us(node?.prompt || "");
@@ -245,6 +399,8 @@ function CreatePanel({ node, onClose, onGenerate }) {
   const [generateAudio, setGenerateAudio] = us(node?.generateAudio || node?.generate_audio || false);
   const [returnLastFrame, setReturnLastFrame] = us(node?.returnLastFrame || node?.return_last_frame || false);
   const [webSearch, setWebSearch] = us(!!node?.webSearch || !!node?.tools?.some((t) => t.type === "web_search"));
+  const [submitting, setSubmitting] = us(false);
+  const [submitError, setSubmitError] = us("");
   const sRef = ur(),eRef = ur(),dragRef = ur(null);
   const [panelPos, setPanelPos] = us(readPanelPos);
 
@@ -253,30 +409,43 @@ function CreatePanel({ node, onClose, onGenerate }) {
 
   ue(() => {if (isFast && res === "1080p") setRes("720p");}, [isFast, res]);
 
-  const content = um(() => buildContent({ mode, prompt, startImg, endImg, refImages, refVideos, refAudios, editVideo }),
-  [mode, prompt, startImg, endImg, refImages, refVideos, refAudios, editVideo]);
   const hasPrompt = !!prompt.trim();
   const hasVisualRef = refImages.length > 0 || refVideos.length > 0;
+  const panelParams = {
+    mode, model, prompt, neg, ar, ratio: ar, resolution: res, duration: dur,
+    startImg, endImg, refImages, refVideos, refAudios, editVideo,
+    seed: seed || null, watermark, fixedCam, camera_fixed: fixedCam,
+    generateAudio, generate_audio: generateAudio,
+    returnLastFrame, return_last_frame: returnLastFrame,
+    webSearch,
+    modelLabel: selectedModel.label
+  };
+  const validationErrors = validateCreateTaskParams(panelParams, backendConfig || readBackendConfig());
+  const firstError = validationErrors[0];
   const ok =
     mode === "t2v" ? hasPrompt :
     mode === "first_frame" ? !!startImg :
     mode === "first_last" ? !!startImg && !!endImg :
-    mode === "reference" ? hasPrompt && hasVisualRef :
-    mode === "edit" ? hasPrompt && editVideo.length === 1 :
-    mode === "extend" ? hasPrompt && refVideos.length > 0 :
+    mode === "reference" ? hasVisualRef :
+    mode === "edit" ? editVideo.length === 1 :
+    mode === "extend" ? refVideos.length > 0 :
     false;
 
-  function go() {
-    onGenerate({
-      mode, model, prompt, neg, ar, ratio: ar, resolution: res, duration: dur,
-      startImg, endImg, refImages, refVideos, refAudios, editVideo,
-      seed: seed || null, watermark, fixedCam, camera_fixed: fixedCam,
-      generateAudio, generate_audio: generateAudio,
-      returnLastFrame, return_last_frame: returnLastFrame,
-      webSearch, tools: webSearch ? [{ type: "web_search" }] : [],
-      content,
-      modelLabel: selectedModel.label
-    });
+  async function go() {
+    if (submitting) return;
+    if (!ok || firstError) {
+      setSubmitError(firstError?.message || "请补齐必填参数");
+      return;
+    }
+    setSubmitting(true);
+    setSubmitError("");
+    try {
+      await onGenerate(panelParams);
+    } catch (err) {
+      setSubmitError(formatCreateError(err));
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   function startDrag(e) {
@@ -439,9 +608,19 @@ function CreatePanel({ node, onClose, onGenerate }) {
 
       </div>
       <div className="panel-footer">
-        <button onClick={go} disabled={!ok} className={"btn-gen" + (ok ? " ok" : " no")}>
+        {(submitError || firstError) && (
+          <div style={{ fontSize: 11, color: "#b91c1c", lineHeight: 1.45, marginBottom: 8 }}>
+            {submitError || firstError.message}
+          </div>
+        )}
+        {backendConfig?.mode && (
+          <div style={{ fontSize: 10.5, color: "#aaa", marginBottom: 7, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            后端：{backendConfig.mode}{backendConfig.mode !== "mock" ? ` · ${createEndpoint(backendConfig)}` : ""}
+          </div>
+        )}
+        <button onClick={go} disabled={!ok || !!firstError || submitting} className={"btn-gen" + (ok && !firstError && !submitting ? " ok" : " no")}>
           <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 17l-6.2 4.3 2.4-7.4L2 9.4h7.6z" /></svg>
-          生成视频
+          {submitting ? "提交中…" : "生成视频"}
         </button>
       </div>
     </div>);
@@ -526,6 +705,8 @@ function DetailPanel({ node, onClose, onPreview, onDownload, onRegen, onDelete }
             ["比例", node.ar],
             ["分辨率", node.resolution],
             ["时长", node.duration + "s"],
+            ...(node.taskId ? [["任务 ID", node.taskId]] : []),
+            ...(node.backendMode ? [["后端", node.backendMode]] : []),
             ["模式", MODE_LABELS[node.mode] || "视频生成"],
             ["水印", node.watermark ? "开" : "关"],
             ["固定镜头", node.fixedCam ? "开" : "关"],
@@ -774,408 +955,20 @@ function AssetsPanel({ onClose, nodes }) {
 
 }
 
-// ── HistoryPanel ──────────────────────────────────────────────────────
-const HISTORY_STATUS_OPTIONS = [
-  ["all", "全部"],
-  ["queued", "排队中"],
-  ["running", "生成中"],
-  ["succeeded", "已完成"],
-  ["failed", "失败"],
-  ["cancelled", "已取消"],
-];
-
-const HISTORY_STATUS_COLORS = {
-  queued: { bg: "#f3f0ff", fg: "#7c3aed", dot: "#a78bfa" },
-  running: { bg: "#fffbeb", fg: "#b45309", dot: "#f59e0b" },
-  succeeded: { bg: "#ecfdf5", fg: "#047857", dot: "#10b981" },
-  failed: { bg: "#fef2f2", fg: "#b91c1c", dot: "#ef4444" },
-  cancelled: { bg: "#f5f5f5", fg: "#6b7280", dot: "#9ca3af" },
-  deleted: { bg: "#f5f5f5", fg: "#9ca3af", dot: "#d1d5db" },
-};
-
-// Mock data generator for demo / testing
-function generateMockHistoryTasks(count = 23) {
-  const statuses = ["queued", "running", "succeeded", "failed", "cancelled"];
-  const models = ["doubao-seedance-2-0-260128", "doubao-seedance-2-0-fast-260128"];
-  const modelLabels = { "doubao-seedance-2-0-260128": "Seedance 2.0", "doubao-seedance-2-0-fast-260128": "Seedance 2.0 Fast" };
-  const prompts = [
-    "一只猫在草地上奔跑",
-    "城市夜景延时摄影",
-    "海底世界珊瑚礁",
-    "日落时分的海滩",
-    "机器人在工厂工作",
-    "樱花飘落的街道",
-    "星空下的雪山",
-    "水墨画风格的山水",
-    "未来城市天际线",
-    "小女孩在花园追蝴蝶",
-    "宇航员漫步月球",
-    "古风宫殿全景",
-    "咖啡拉花特写",
-    "雨中东京街头",
-    "沙漠中的绿洲",
-  ];
-  const ratios = ["16:9", "9:16", "1:1", "4:3"];
-  const resolutions = ["480p", "720p", "1080p"];
-  const tasks = [];
-  const now = Date.now();
-  for (let i = 0; i < count; i++) {
-    const status = statuses[Math.floor(Math.random() * statuses.length)];
-    const model = models[Math.floor(Math.random() * models.length)];
-    const created = now - Math.floor(Math.random() * 7 * 24 * 3600 * 1000);
-    tasks.push({
-      task_id: "cgt-" + Math.random().toString(36).slice(2, 10),
-      status,
-      model,
-      modelLabel: modelLabels[model],
-      prompt: prompts[i % prompts.length],
-      ratio: ratios[Math.floor(Math.random() * ratios.length)],
-      resolution: resolutions[Math.floor(Math.random() * resolutions.length)],
-      duration: 4 + Math.floor(Math.random() * 12),
-      created_at: new Date(created).toISOString(),
-      updated_at: new Date(created + Math.floor(Math.random() * 300000)).toISOString(),
-      video_url: status === "succeeded" ? "https://example.com/video-" + i + ".mp4" : null,
-      error_message: status === "failed" ? "生成超时，请重试" : null,
-    });
-  }
-  return tasks.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-}
-
-function fmtRelativeTime(ts) {
-  if (!ts) return "—";
-  const diff = Date.now() - new Date(ts).getTime();
-  if (diff < 60000) return "刚刚";
-  if (diff < 3600000) return Math.floor(diff / 60000) + " 分钟前";
-  if (diff < 86400000) return Math.floor(diff / 3600000) + " 小时前";
-  if (diff < 604800000) return Math.floor(diff / 86400000) + " 天前";
-  return fmtTime(ts);
-}
-
-function HistoryTaskCard({ task, onResume, onViewResult, onCopyId, onSelect }) {
-  const [copied, setCopied] = React.useState(false);
-  const sc = HISTORY_STATUS_COLORS[task.status] || HISTORY_STATUS_COLORS.cancelled;
-  const statusLabel = STATUS_LABELS[task.status] || task.status;
-  const isPending = task.status === "queued" || task.status === "running";
-  const isDone = task.status === "succeeded";
-
-  function handleCopy(e) {
-    e.stopPropagation();
-    navigator.clipboard.writeText(task.task_id).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    });
-    if (onCopyId) onCopyId(task.task_id);
-  }
-
-  return (
-    <div onClick={() => onSelect && onSelect(task)} style={{
-      background: "#fff", borderRadius: 12, border: "1px solid #eee",
-      padding: "12px 14px", cursor: "pointer",
-      transition: "border-color .15s, box-shadow .15s",
-    }}
-    onMouseEnter={e => { e.currentTarget.style.borderColor = "#d0d0d0"; e.currentTarget.style.boxShadow = "0 2px 8px rgba(0,0,0,.06)"; }}
-    onMouseLeave={e => { e.currentTarget.style.borderColor = "#eee"; e.currentTarget.style.boxShadow = "none"; }}
-    >
-      {/* Top row: status + model + time */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{
-            display: "inline-flex", alignItems: "center", gap: 5,
-            padding: "3px 9px", borderRadius: 12, fontSize: 11, fontWeight: 600,
-            background: sc.bg, color: sc.fg,
-          }}>
-            <span style={{ width: 6, height: 6, borderRadius: 3, background: sc.dot }} />
-            {statusLabel}
-          </span>
-          <span style={{ fontSize: 11, color: "#999", fontWeight: 500 }}>{task.modelLabel || "Seedance"}</span>
-        </div>
-        <span style={{ fontSize: 10.5, color: "#bbb", fontVariantNumeric: "tabular-nums" }}>{fmtRelativeTime(task.created_at)}</span>
-      </div>
-
-      {/* Prompt */}
-      <div style={{ fontSize: 13, color: "#222", fontWeight: 500, lineHeight: 1.45, marginBottom: 8, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-        {task.prompt || "（无提示词）"}
-      </div>
-
-      {/* Params row */}
-      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
-        {[
-          ["ID", task.task_id.slice(0, 12) + "…"],
-          ["比例", task.ratio],
-          ["分辨率", task.resolution],
-          ["时长", task.duration + "s"],
-          ...(task.video_url ? [["有结果", "✓"]] : []),
-        ].map(([k, v]) => (
-          <span key={k} style={{
-            fontSize: 10, color: "#888", background: "#f7f7f7", borderRadius: 5,
-            padding: "2px 7px", fontVariantNumeric: "tabular-nums",
-          }}>{k}: {v}</span>
-        ))}
-      </div>
-
-      {/* Error message */}
-      {task.error_message && (
-        <div style={{ fontSize: 11.5, color: "#dc2626", background: "#fef2f2", borderRadius: 7, padding: "6px 10px", marginBottom: 10, lineHeight: 1.4 }}>
-          {task.error_message}
-        </div>
-      )}
-
-      {/* Actions */}
-      <div style={{ display: "flex", gap: 6 }}>
-        <button onClick={handleCopy} style={{
-          padding: "5px 10px", borderRadius: 7, border: "1px solid #e5e5e5", background: "#fafafa",
-          fontSize: 11, color: "#666", cursor: "pointer", display: "flex", alignItems: "center", gap: 4,
-        }}>
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
-          {copied ? "已复制" : "复制 ID"}
-        </button>
-
-        {isPending && (
-          <button onClick={e => { e.stopPropagation(); onResume && onResume(task); }} style={{
-            padding: "5px 10px", borderRadius: 7, border: "1px solid #f59e0b", background: "#fffbeb",
-            fontSize: 11, color: "#b45309", cursor: "pointer", fontWeight: 600,
-          }}>
-            恢复轮询
-          </button>
-        )}
-
-        {isDone && (
-          <button onClick={e => { e.stopPropagation(); onViewResult && onViewResult(task); }} style={{
-            padding: "5px 10px", borderRadius: 7, border: "none", background: "#111",
-            fontSize: 11, color: "#fff", cursor: "pointer", fontWeight: 600,
-          }}>
-            查看结果
-          </button>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function HistoryPanel({ onClose, onResumeTask, onViewResult }) {
-  const { useState: us, useEffect: ue, useMemo: um } = React;
-  const [statusFilter, setStatusFilter] = us("all");
-  const [page, setPage] = us(1);
-  const [loading, setLoading] = us(false);
-  const [error, setError] = us(null);
-  const [searchQuery, setSearchQuery] = us("");
-  const [allTasks, setAllTasks] = us([]);
-  const [detailTask, setDetailTask] = us(null);
-  const pageSize = 10;
-
-  // Load mock data on mount
-  ue(() => {
-    setLoading(true);
-    // Simulate API call
-    setTimeout(() => {
-      setAllTasks(generateMockHistoryTasks(23));
-      setLoading(false);
-    }, 600);
-  }, []);
-
-  // Filter & paginate
-  const filtered = um(() => {
-    let list = allTasks;
-    if (statusFilter !== "all") list = list.filter(t => t.status === statusFilter);
-    if (searchQuery.trim()) {
-      const q = searchQuery.trim().toLowerCase();
-      list = list.filter(t =>
-        (t.task_id && t.task_id.toLowerCase().includes(q)) ||
-        (t.prompt && t.prompt.toLowerCase().includes(q))
-      );
-    }
-    return list;
-  }, [allTasks, statusFilter, searchQuery]);
-
-  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
-  const paged = filtered.slice((page - 1) * pageSize, page * pageSize);
-
-  // Reset to page 1 when filter changes
-  ue(() => { setPage(1); }, [statusFilter, searchQuery]);
-
-  // If showing detail view
-  if (detailTask) {
-    return (
-      <div className="floatp" style={{ width: 380 }}>
-        <div className="fp-hd">
-          <div className="fp-ttl" style={{ cursor: "pointer" }} onClick={() => setDetailTask(null)}>
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M15 18l-6-6 6-6"/></svg>
-            <span>任务详情</span>
-          </div>
-          <button className="fp-min" onClick={onClose} title="关闭">
-            <svg width="14" height="2" viewBox="0 0 14 2"><rect width="14" height="2" rx="1" fill="#666"/></svg>
-          </button>
-        </div>
-        <div className="fp-bd">
-          {/* Task ID */}
-          <div style={{ marginBottom: 14 }}>
-            <div className="fl">任务 ID</div>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <code style={{ fontSize: 12, color: "#333", background: "#f5f5f5", padding: "5px 10px", borderRadius: 7, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{detailTask.task_id}</code>
-              <button onClick={() => navigator.clipboard.writeText(detailTask.task_id)} style={{ padding: "5px 10px", borderRadius: 7, border: "1px solid #e5e5e5", background: "#fafafa", fontSize: 11, color: "#666", cursor: "pointer", whiteSpace: "nowrap" }}>复制</button>
-            </div>
-          </div>
-
-          {/* Status */}
-          <div style={{ marginBottom: 14 }}>
-            <div className="fl">状态</div>
-            {(() => {
-              const sc = HISTORY_STATUS_COLORS[detailTask.status] || HISTORY_STATUS_COLORS.cancelled;
-              return (
-                <span style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "4px 12px", borderRadius: 14, fontSize: 12, fontWeight: 600, background: sc.bg, color: sc.fg }}>
-                  <span style={{ width: 7, height: 7, borderRadius: 4, background: sc.dot }} />
-                  {STATUS_LABELS[detailTask.status] || detailTask.status}
-                </span>
-              );
-            })()}
-          </div>
-
-          {/* Prompt */}
-          {detailTask.prompt && (
-            <div style={{ marginBottom: 14 }}>
-              <div className="fl">提示词</div>
-              <div style={{ background: "#f7f7f7", borderRadius: 8, padding: "9px 11px", fontSize: 12.5, color: "#333", lineHeight: 1.55 }}>{detailTask.prompt}</div>
-            </div>
-          )}
-
-          {/* Params grid */}
-          <div style={{ marginBottom: 14 }}>
-            <div className="fl">参数</div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
-              {[
-                ["模型", detailTask.modelLabel || detailTask.model],
-                ["比例", detailTask.ratio],
-                ["分辨率", detailTask.resolution],
-                ["时长", detailTask.duration + "s"],
-                ["创建时间", fmtTime(detailTask.created_at)],
-                ["更新时间", fmtTime(detailTask.updated_at)],
-              ].filter(([, v]) => v && v !== "—").map(([k, v]) => (
-                <div key={k} style={{ background: "#f7f7f7", borderRadius: 7, padding: "7px 9px" }}>
-                  <div style={{ fontSize: 9.5, color: "#999", fontWeight: 600, letterSpacing: "0.05em", textTransform: "uppercase", marginBottom: 1 }}>{k}</div>
-                  <div style={{ fontSize: 12, color: "#111", fontWeight: 500, fontVariantNumeric: "tabular-nums" }}>{v}</div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Error */}
-          {detailTask.error_message && (
-            <div style={{ marginBottom: 14 }}>
-              <div className="fl">错误信息</div>
-              <div style={{ background: "#fef2f2", borderRadius: 8, padding: "9px 11px", fontSize: 12, color: "#dc2626", lineHeight: 1.5 }}>{detailTask.error_message}</div>
-            </div>
-          )}
-
-          {/* Actions */}
-          <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
-            {(detailTask.status === "queued" || detailTask.status === "running") && (
-              <button onClick={() => { onResumeTask && onResumeTask(detailTask); }} style={{ flex: 1, padding: "10px 0", borderRadius: 9, border: "none", background: "#f59e0b", fontSize: 13, fontWeight: 600, cursor: "pointer", color: "#fff" }}>
-                恢复轮询
-              </button>
-            )}
-            {detailTask.status === "succeeded" && detailTask.video_url && (
-              <button onClick={() => { onViewResult && onViewResult(detailTask); }} style={{ flex: 1, padding: "10px 0", borderRadius: 9, border: "none", background: "#111", fontSize: 13, fontWeight: 600, cursor: "pointer", color: "#fff" }}>
-                查看结果
-              </button>
-            )}
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="floatp" style={{ width: 400 }}>
-      <div className="fp-hd">
-        <div className="fp-ttl"><span>历史任务</span></div>
-        <button className="fp-min" onClick={onClose} title="关闭">
-          <svg width="14" height="2" viewBox="0 0 14 2"><rect width="14" height="2" rx="1" fill="#666"/></svg>
-        </button>
-      </div>
-
-      {/* Search */}
-      <div style={{ padding: "0 18px 10px" }}>
-        <div style={{ display: "flex", alignItems: "center", background: "#fff", border: "1px solid #e2e2e2", borderRadius: 18, padding: "7px 14px", height: 34, boxSizing: "border-box" }}>
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#aaa" strokeWidth="2" style={{ flexShrink: 0, marginRight: 8 }}><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
-          <input value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="搜索任务 ID 或提示词…" style={{ flex: 1, border: "none", background: "none", outline: "none", fontSize: 13, color: "#222", fontFamily: "inherit" }} />
-        </div>
-      </div>
-
-      {/* Status filter */}
-      <div style={{ padding: "0 18px 10px", display: "flex", gap: 5, flexWrap: "wrap" }}>
-        {HISTORY_STATUS_OPTIONS.map(([val, label]) => (
-          <button key={val} onClick={() => setStatusFilter(val)} style={{
-            padding: "4px 11px", borderRadius: 20, fontSize: 11.5, fontWeight: 600, cursor: "pointer",
-            border: statusFilter === val ? "1.5px solid #111" : "1.5px solid #e5e5e5",
-            background: statusFilter === val ? "#111" : "#fff",
-            color: statusFilter === val ? "#fff" : "#777",
-            transition: "all .12s",
-          }}>{label}</button>
-        ))}
-      </div>
-
-      {/* Task list */}
-      <div style={{ flex: 1, overflowY: "auto", padding: "0 18px 14px", display: "flex", flexDirection: "column", gap: 10 }}>
-        {loading && (
-          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 40, gap: 10 }}>
-            <div style={{ display: "flex", gap: 5 }}>
-              {[0, 1, 2].map(i => <div key={i} style={{ width: 6, height: 6, borderRadius: 3, background: "#ccc", animation: `blink 1.2s ${i * 0.2}s ease-in-out infinite` }} />)}
-            </div>
-            <span style={{ fontSize: 12, color: "#999" }}>加载中…</span>
-          </div>
-        )}
-
-        {error && !loading && (
-          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 40, gap: 10 }}>
-            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="1.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-            <span style={{ fontSize: 12.5, color: "#666" }}>{error}</span>
-            <button onClick={() => { setError(null); setLoading(true); setTimeout(() => { setAllTasks(generateMockHistoryTasks(23)); setLoading(false); }, 500); }} style={{ padding: "6px 14px", borderRadius: 8, border: "1px solid #ddd", background: "#fff", fontSize: 12, cursor: "pointer", color: "#333" }}>重试</button>
-          </div>
-        )}
-
-        {!loading && !error && filtered.length === 0 && (
-          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 40, gap: 8 }}>
-            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#d0d0d0" strokeWidth="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 3v18"/></svg>
-            <span style={{ fontSize: 13, color: "#bbb" }}>{searchQuery ? "没有匹配的任务" : "暂无历史任务"}</span>
-          </div>
-        )}
-
-        {!loading && !error && paged.map(task => (
-          <HistoryTaskCard
-            key={task.task_id}
-            task={task}
-            onSelect={setDetailTask}
-            onResume={onResumeTask}
-            onViewResult={onViewResult}
-          />
-        ))}
-      </div>
-
-      {/* Pagination */}
-      {!loading && !error && filtered.length > 0 && (
-        <div style={{ padding: "10px 18px 14px", borderTop: "1px solid #f0f0f0", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <span style={{ fontSize: 11, color: "#999" }}>共 {filtered.length} 条</span>
-          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-            <button disabled={page <= 1} onClick={() => setPage(p => p - 1)} style={{
-              width: 28, height: 28, borderRadius: 7, border: "1px solid #e5e5e5", background: page <= 1 ? "#f9f9f9" : "#fff",
-              cursor: page <= 1 ? "not-allowed" : "pointer", display: "flex", alignItems: "center", justifyContent: "center",
-              color: page <= 1 ? "#ccc" : "#666", opacity: page <= 1 ? 0.5 : 1,
-            }}>
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M15 18l-6-6 6-6"/></svg>
-            </button>
-            <span style={{ fontSize: 11.5, color: "#666", fontVariantNumeric: "tabular-nums", minWidth: 40, textAlign: "center" }}>{page} / {totalPages}</span>
-            <button disabled={page >= totalPages} onClick={() => setPage(p => p + 1)} style={{
-              width: 28, height: 28, borderRadius: 7, border: "1px solid #e5e5e5", background: page >= totalPages ? "#f9f9f9" : "#fff",
-              cursor: page >= totalPages ? "not-allowed" : "pointer", display: "flex", alignItems: "center", justifyContent: "center",
-              color: page >= totalPages ? "#ccc" : "#666", opacity: page >= totalPages ? 0.5 : 1,
-            }}>
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 18l6-6-6-6"/></svg>
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-Object.assign(window, { VNode, CreatePanel, DetailPanel, PreviewModal, AgentPanel, AssetsPanel, HistoryPanel, HistoryTaskCard, HISTORY_STATUS_OPTIONS, HISTORY_STATUS_COLORS, frameSize, FRAME_AR });
+Object.assign(window, {
+  VNode,
+  CreatePanel,
+  DetailPanel,
+  PreviewModal,
+  AgentPanel,
+  AssetsPanel,
+  frameSize,
+  FRAME_AR,
+  readBackendConfig,
+  createEndpoint,
+  validateCreateTaskParams,
+  buildCreateTaskPayload,
+  buildAssets,
+  createVideoTask,
+  formatCreateError
+});
