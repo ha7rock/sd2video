@@ -1,0 +1,1350 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>画布 · 视频创作</title>
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script type="text/babel">
+// ── Frame sizing: depends on aspect ratio AND resolution ───────────────
+const FRAME_AR = { "16:9": [16, 9], "9:16": [9, 16], "1:1": [1, 1], "4:3": [4, 3], "3:4": [3, 4], "21:9": [21, 9], adaptive: [16, 9] };
+const RES_SCALE = { "480p": 0.62, "720p": 0.82, "1080p": 1.0 };
+const MAX_DIM = 240;
+function frameSize(ar, res) {
+  const [a, b] = FRAME_AR[ar] || [16, 9];
+  const f = RES_SCALE[res] || 0.82;
+  let w, h;
+  if (a >= b) {w = MAX_DIM;h = MAX_DIM * b / a;} else
+  {h = MAX_DIM;w = MAX_DIM * a / b;}
+  return [Math.round(w * f), Math.round(h * f)];
+}
+window.frameSize = frameSize;
+function aspectValue(ar) {
+  const [a, b] = FRAME_AR[ar] || [16, 9];
+  return `${a}/${b}`;
+}
+
+// ── VNode ────────────────────────────────────────────────────────────
+function VNode({ node, sel, zoom, onClickNode, onMove, onAction }) {
+  const [w, h] = frameSize(node.ar, node.resolution);
+  const movedRef = React.useRef(false);
+
+  function onMouseDown(e) {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    movedRef.current = false;
+    const sx = e.clientX,sy = e.clientY,ox = node.x,oy = node.y;
+    function mv(ev) {
+      const dx = ev.clientX - sx,dy = ev.clientY - sy;
+      if (Math.abs(dx) > 3 || Math.abs(dy) > 3) movedRef.current = true;
+      if (movedRef.current) onMove(node.id, { x: ox + dx / zoom, y: oy + dy / zoom });
+    }
+    function up() {
+      window.removeEventListener("mousemove", mv);
+      window.removeEventListener("mouseup", up);
+      if (!movedRef.current) onClickNode(node.id, sel);
+    }
+    window.addEventListener("mousemove", mv);
+    window.addEventListener("mouseup", up);
+  }
+
+  const sc = { idle: "#ccc", generating: "#f59e0b", done: "#22c55e", error: "#ef4444" }[node.status] || "#ccc";
+  const tbBtn = (icon, label, act, disabled) =>
+  <button className="ntb-btn" title={label} disabled={disabled}
+  onClick={(e) => {e.stopPropagation();if (!disabled) onAction(act);}}
+  style={disabled ? { opacity: .35, cursor: "not-allowed" } : {}}>
+      {icon}
+    </button>;
+
+
+  return (
+    <div className={"vnode" + (sel ? " sel" : "")} style={{ left: node.x, top: node.y, width: w }}
+    onMouseDown={onMouseDown}
+    onDoubleClick={(e) => {e.stopPropagation();onClickNode(node.id, true);}}>
+      {sel &&
+      <div className="ntb" onMouseDown={(e) => e.stopPropagation()}>
+          {tbBtn(<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>, "预览", "preview", node.status !== "done")}
+          {tbBtn(<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>, "下载", "download", node.status !== "done")}
+          {tbBtn(<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10" /><line x1="12" y1="16" x2="12" y2="12" /><line x1="12" y1="8" x2="12.01" y2="8" /></svg>, "信息", "info")}
+          <div className="ntb-sep" />
+          {tbBtn(<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6" /><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" /><path d="M10 11v6M14 11v6" /><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>, "从画布删除", "delete")}
+        </div>
+      }
+      <div className="vnode-card" style={{ width: w, height: h }}>
+        {node.status === "generating" &&
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
+            <div style={{ display: "flex", gap: 5 }}>
+              {[0, 1, 2].map((i) =>
+            <div key={i} style={{ width: 6, height: 6, borderRadius: 3, background: "rgba(0,0,0,0.3)", animation: `blink 1.2s ${i * 0.2}s ease-in-out infinite` }} />
+            )}
+            </div>
+            {node.progress != null &&
+          <div style={{ width: 80, height: 2, background: "#e0e0e0", borderRadius: 2 }}>
+                <div style={{ width: node.progress + "%", height: "100%", background: "#555", borderRadius: 2, transition: "width .3s" }} />
+              </div>
+          }
+            <span style={{ fontSize: 10, color: "rgba(0,0,0,0.4)" }}>生成中 {node.progress || 0}%</span>
+          </div>
+        }
+        {node.status === "done" &&
+        <div style={{ position: "absolute", inset: 0, background: "linear-gradient(135deg,#1a1a2e,#16213e,#0f3460)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <div style={{ width: Math.min(40, h * 0.3), height: Math.min(40, h * 0.3), borderRadius: "50%", background: "rgba(255,255,255,0.18)", backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <svg width={Math.min(18, h * 0.14)} height={Math.min(18, h * 0.14)} viewBox="0 0 24 24" fill="white"><path d="M8 5v14l11-7z" /></svg>
+            </div>
+          </div>
+        }
+        {node.status === "error" && <span style={{ fontSize: 11, color: "#ef4444" }}>生成失败</span>}
+        <div style={{ position: "absolute", top: 7, right: 7, width: 6, height: 6, borderRadius: 3, background: sc }} />
+        {sel && <>
+          <div className="sel-dot" style={{ top: -4, left: -4 }} />
+          <div className="sel-dot" style={{ top: -4, right: -4 }} />
+          <div className="sel-dot" style={{ bottom: -4, left: -4 }} />
+          <div className="sel-dot" style={{ bottom: -4, right: -4 }} />
+        </>}
+      </div>
+      <div className="vnode-lbl" style={{ maxWidth: w }}>{node.modelLabel} · {node.ar} · {node.resolution} · {node.duration}s</div>
+    </div>);
+
+}
+
+// ── Models / constants ───────────────────────────────────────────────
+const MODELS = [
+{ id: "doubao-seedance-2-0-260128", label: "Seedance 2.0", maxResolution: "1080p", supportsReference: true },
+{ id: "doubao-seedance-2-0-fast-260128", label: "Seedance 2.0 Fast", maxResolution: "720p", supportsReference: true }];
+
+const MODE_OPTIONS = [
+["t2v", "文生视频"],
+["first_frame", "首帧"],
+["first_last", "首尾帧"],
+["reference", "参考生成"],
+["edit", "编辑视频"],
+["extend", "延长视频"]];
+const MODE_LABELS = Object.fromEntries(MODE_OPTIONS);
+const ARS = ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "adaptive"];
+const RESS = ["480p", "720p", "1080p"];
+
+function Pill({ label, on, onClick, disabled }) {
+  return <button onClick={disabled ? undefined : onClick} disabled={disabled} className={"pill" + (on ? " on" : "") + (disabled ? " off" : "")}>{label}</button>;
+}
+function Toggle({ on, onChange }) {
+  return (
+    <button onClick={() => onChange(!on)} className="tgl" style={{ background: on ? "#111" : "#ccc" }}>
+      <div className="tgl-k" style={{ left: on ? 18 : 2 }} />
+    </button>);
+
+}
+
+function MediaPicker({ label, accept, kind, items, onChange, max = 1 }) {
+  const ref = React.useRef();
+  const list = items || [];
+  function add(files) {
+    const next = [...list];
+    for (const f of Array.from(files || [])) {
+      if (next.length >= max) break;
+      next.push({ url: URL.createObjectURL(f), name: f.name, kind });
+    }
+    onChange(next);
+  }
+  function remove(i) {
+    onChange(list.filter((_, idx) => idx !== i));
+  }
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
+        <span style={{ fontSize: 11, color: "#888" }}>{label}</span>
+        <span style={{ fontSize: 10, color: "#bbb", fontVariantNumeric: "tabular-nums" }}>{list.length}/{max}</span>
+      </div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+        {list.map((it, i) =>
+        <div key={it.url + i} className="asset-chip">
+          {kind === "image" && <img src={it.url} />}
+          {kind === "video" && <video src={it.url} muted />}
+          {kind === "audio" && <div className="audio-chip">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3v10.5A4 4 0 1 1 10 10V5h10v3H12z" /></svg>
+          </div>}
+          <span>{kind === "image" ? "图片" : kind === "video" ? "视频" : "音频"}{i + 1}</span>
+          <button onClick={(e) => {e.stopPropagation();remove(i);}}>×</button>
+        </div>
+        )}
+        {list.length < max &&
+        <button className="add-asset" onClick={() => ref.current?.click()}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 5v14M5 12h14" /></svg>
+          {label}
+        </button>}
+      </div>
+      <input ref={ref} type="file" accept={accept} multiple={max > 1} style={{ display: "none" }}
+      onChange={(e) => {add(e.target.files);e.target.value = "";}} />
+    </div>
+  );
+}
+
+function buildContent({ mode, prompt, startImg, endImg, refImages, refVideos, refAudios, editVideo }) {
+  const content = [];
+  if (prompt.trim()) content.push({ type: "text", text: prompt.trim() });
+  if (mode === "first_frame" && startImg) content.push({ type: "image_url", image_url: { url: startImg }, role: "first_frame" });
+  if (mode === "first_last") {
+    if (startImg) content.push({ type: "image_url", image_url: { url: startImg }, role: "first_frame" });
+    if (endImg) content.push({ type: "image_url", image_url: { url: endImg }, role: "last_frame" });
+  }
+  if (mode === "reference") {
+    refImages.forEach((it) => content.push({ type: "image_url", image_url: { url: it.url }, role: "reference_image" }));
+    refVideos.forEach((it) => content.push({ type: "video_url", video_url: { url: it.url }, role: "reference_video" }));
+    refAudios.forEach((it) => content.push({ type: "audio_url", audio_url: { url: it.url }, role: "reference_audio" }));
+  }
+  if (mode === "edit") {
+    editVideo.forEach((it) => content.push({ type: "video_url", video_url: { url: it.url }, role: "reference_video" }));
+    refImages.forEach((it) => content.push({ type: "image_url", image_url: { url: it.url }, role: "reference_image" }));
+    refAudios.forEach((it) => content.push({ type: "audio_url", audio_url: { url: it.url }, role: "reference_audio" }));
+  }
+  if (mode === "extend") {
+    refVideos.forEach((it) => content.push({ type: "video_url", video_url: { url: it.url }, role: "reference_video" }));
+  }
+  return content;
+}
+
+const PANEL_POS_KEY = "sd2video:create-panel-position";
+function defaultPanelPos() {
+  return {
+    x: typeof window === "undefined" ? 16 : Math.max(16, window.innerWidth - 326),
+    y: 56
+  };
+}
+function clampPanelPos(pos, w = 310, h = 520) {
+  if (typeof window === "undefined") return pos;
+  return {
+    x: Math.max(8, Math.min(window.innerWidth - w - 8, pos.x)),
+    y: Math.max(8, Math.min(window.innerHeight - h - 8, pos.y))
+  };
+}
+function readPanelPos() {
+  if (typeof window === "undefined") return defaultPanelPos();
+  try {
+    const saved = JSON.parse(window.localStorage.getItem(PANEL_POS_KEY) || "null");
+    if (saved && Number.isFinite(saved.x) && Number.isFinite(saved.y)) return clampPanelPos(saved);
+  } catch (_) {}
+  return defaultPanelPos();
+}
+function savePanelPos(pos) {
+  if (typeof window === "undefined") return;
+  try { window.localStorage.setItem(PANEL_POS_KEY, JSON.stringify(pos)); } catch (_) {}
+}
+
+// ── CreatePanel ──────────────────────────────────────────────────────
+function CreatePanel({ node, onClose, onGenerate }) {
+  const { useState: us, useRef: ur, useEffect: ue, useMemo: um } = React;
+  const [mode, setMode] = us(node?.mode || "t2v");
+  const [model, setModel] = us(node?.model || MODELS[0].id);
+  const [prompt, setPrompt] = us(node?.prompt || "");
+  const [neg, setNeg] = us(node?.neg || "");
+  const [showNeg, setShowNeg] = us(false);
+  const [ar, setAr] = us(node?.ar || "16:9");
+  const [res, setRes] = us(node?.resolution || "720p");
+  const [dur, setDur] = us(node?.duration || 5);
+  const [startImg, setStart] = us(node?.startImg || null);
+  const [endImg, setEnd] = us(node?.endImg || null);
+  const [refImages, setRefImages] = us(node?.refImages || []);
+  const [refVideos, setRefVideos] = us(node?.refVideos || (node?.refVideo ? [{ url: node.refVideo, kind: "video" }] : []));
+  const [refAudios, setRefAudios] = us(node?.refAudios || []);
+  const [editVideo, setEditVideo] = us(node?.editVideo || []);
+  const [seed, setSeed] = us(node?.seed || "");
+  const [watermark, setWM] = us(node?.watermark || false);
+  const [fixedCam, setFixedCam] = us(node?.fixedCam || node?.camera_fixed || false);
+  const [generateAudio, setGenerateAudio] = us(node?.generateAudio || node?.generate_audio || false);
+  const [returnLastFrame, setReturnLastFrame] = us(node?.returnLastFrame || node?.return_last_frame || false);
+  const [webSearch, setWebSearch] = us(!!node?.webSearch || !!node?.tools?.some((t) => t.type === "web_search"));
+  const sRef = ur(),eRef = ur(),dragRef = ur(null);
+  const [panelPos, setPanelPos] = us(readPanelPos);
+
+  const selectedModel = MODELS.find((m) => m.id === model) || MODELS[0];
+  const isFast = selectedModel.maxResolution === "720p";
+
+  ue(() => {if (isFast && res === "1080p") setRes("720p");}, [isFast, res]);
+
+  const content = um(() => buildContent({ mode, prompt, startImg, endImg, refImages, refVideos, refAudios, editVideo }),
+  [mode, prompt, startImg, endImg, refImages, refVideos, refAudios, editVideo]);
+  const hasPrompt = !!prompt.trim();
+  const hasVisualRef = refImages.length > 0 || refVideos.length > 0;
+  const ok =
+    mode === "t2v" ? hasPrompt :
+    mode === "first_frame" ? !!startImg :
+    mode === "first_last" ? !!startImg && !!endImg :
+    mode === "reference" ? hasPrompt && hasVisualRef :
+    mode === "edit" ? hasPrompt && editVideo.length === 1 :
+    mode === "extend" ? hasPrompt && refVideos.length > 0 :
+    false;
+
+  function go() {
+    onGenerate({
+      mode, model, prompt, neg, ar, ratio: ar, resolution: res, duration: dur,
+      startImg, endImg, refImages, refVideos, refAudios, editVideo,
+      seed: seed || null, watermark, fixedCam, camera_fixed: fixedCam,
+      generateAudio, generate_audio: generateAudio,
+      returnLastFrame, return_last_frame: returnLastFrame,
+      webSearch, tools: webSearch ? [{ type: "web_search" }] : [],
+      content,
+      modelLabel: selectedModel.label
+    });
+  }
+
+  function startDrag(e) {
+    if (e.button !== 0 || e.target.closest("button")) return;
+    e.preventDefault();
+    const panel = dragRef.current;
+    const w = panel?.offsetWidth || 310;
+    const h = panel?.offsetHeight || 520;
+    const sx = e.clientX,sy = e.clientY,ox = panelPos.x,oy = panelPos.y;
+    function mv(ev) {
+      const next = clampPanelPos({ x: ox + ev.clientX - sx, y: oy + ev.clientY - sy }, w, h);
+      setPanelPos(next);
+      savePanelPos(next);
+    }
+    function up() {
+      window.removeEventListener("mousemove", mv);
+      window.removeEventListener("mouseup", up);
+    }
+    window.addEventListener("mousemove", mv);
+    window.addEventListener("mouseup", up);
+  }
+
+  return (
+    <div ref={dragRef} className="panel" style={{ left: panelPos.x, top: panelPos.y, right: "auto" }}>
+      <div className="ph ph-drag" onMouseDown={startDrag}>
+        <div><div className="pt">生成视频</div><div className="ps">Seedance · 火山方舟</div></div>
+        <button className="pc" onMouseDown={(e) => e.stopPropagation()} onClick={onClose}>
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 6L6 18M6 6l12 12" /></svg>
+        </button>
+      </div>
+      <div className="pb">
+        {/* mode */}
+        <div>
+          <div className="fl">生成模式</div>
+          <div className="mode-grid">
+            {MODE_OPTIONS.map(([v, l]) =>
+            <button key={v} onClick={() => setMode(v)} className={"mode-tab" + (mode === v ? " on" : "")}>{l}</button>
+            )}
+          </div>
+        </div>
+
+        {/* model */}
+        <div>
+          <div className="fl">模型</div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>{MODELS.map((m) => <Pill key={m.id} label={m.label} on={model === m.id} onClick={() => setModel(m.id)} />)}</div>
+        </div>
+
+        {/* reference material */}
+        {(mode === "first_frame" || mode === "first_last") &&
+        <div>
+            <div className="fl">关键帧</div>
+          <div style={{ display: "flex", gap: 8 }}>
+              {[[startImg, setStart, sRef, "首帧"], ...(mode === "first_last" ? [[endImg, setEnd, eRef, "尾帧"]] : [])].map(([src, set, ref, lbl]) =>
+            <div key={lbl} className="imgslot" onClick={() => ref.current?.click()}>
+                    {src ? <img src={src} /> : <>
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#ccc" strokeWidth="1.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12" /></svg>
+                      <span style={{ fontSize: 9, color: "#bbb", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>{lbl}</span>
+                    </>}
+                    <input ref={ref} type="file" accept="image/*" style={{ display: "none" }}
+              onChange={(e) => {const f = e.target.files[0];if (f) set(URL.createObjectURL(f));}} />
+                  </div>
+            )}
+              </div>
+          </div>
+        }
+        {mode === "reference" &&
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <div className="fl">参考素材</div>
+          <MediaPicker label="参考图" accept="image/*" kind="image" items={refImages} onChange={setRefImages} max={9} />
+          <MediaPicker label="参考视频" accept="video/*" kind="video" items={refVideos} onChange={setRefVideos} max={3} />
+          <MediaPicker label="参考音频" accept="audio/*" kind="audio" items={refAudios} onChange={setRefAudios} max={3} />
+        </div>}
+        {mode === "edit" &&
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <div className="fl">编辑素材</div>
+          <MediaPicker label="待编辑视频" accept="video/*" kind="video" items={editVideo} onChange={setEditVideo} max={1} />
+          <MediaPicker label="参考图" accept="image/*" kind="image" items={refImages} onChange={setRefImages} max={9} />
+          <MediaPicker label="参考音频" accept="audio/*" kind="audio" items={refAudios} onChange={setRefAudios} max={3} />
+        </div>}
+        {mode === "extend" &&
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <div className="fl">延长素材</div>
+          <MediaPicker label="视频片段" accept="video/*" kind="video" items={refVideos} onChange={setRefVideos} max={3} />
+        </div>}
+
+        {/* prompt */}
+        <div>
+          <div className="fl">提示词</div>
+          <textarea className="ta" value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="描述你想生成的视频内容…" />
+          <div onClick={() => setShowNeg((v) => !v)} style={{ fontSize: 11, color: "#bbb", cursor: "pointer", marginTop: 5, display: "flex", alignItems: "center", gap: 3 }}>
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d={showNeg ? "M18 15l-6-6-6 6" : "M6 9l6 6 6-6"} /></svg>
+            {showNeg ? "收起" : "添加负向提示词"}
+          </div>
+          {showNeg && <textarea className="ta" value={neg} onChange={(e) => setNeg(e.target.value)} placeholder="不希望出现的内容…" style={{ marginTop: 7, minHeight: 50 }} />}
+        </div>
+
+        {/* params */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <div>
+            <div style={{ fontSize: 11, color: "#888", marginBottom: 6 }}>画面比例</div>
+            <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>{ARS.map((r) => <Pill key={r} label={r} on={ar === r} onClick={() => setAr(r)} />)}</div>
+          </div>
+          <div>
+            <div style={{ fontSize: 11, color: "#888", marginBottom: 6 }}>分辨率</div>
+            <div style={{ display: "flex", gap: 5 }}>{RESS.map((r) => <Pill key={r} label={r} on={res === r} disabled={isFast && r === "1080p"} onClick={() => setRes(r)} />)}</div>
+          </div>
+          <div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
+              <span style={{ fontSize: 11, color: "#888" }}>时长</span>
+              <span style={{ fontSize: 12, fontWeight: 600, color: "#111", fontVariantNumeric: "tabular-nums" }}>{dur}s</span>
+            </div>
+            <input type="range" min="4" max="15" step="1" value={dur}
+            onChange={(e) => setDur(parseInt(e.target.value))} className="slider" />
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9.5, color: "#bbb", marginTop: 3, fontVariantNumeric: "tabular-nums" }}>
+              <span>4s</span><span>15s</span>
+            </div>
+          </div>
+        </div>
+
+        {/* options */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <span style={{ fontSize: 12, color: "#444", fontWeight: 500 }}>添加水印</span>
+            <Toggle on={watermark} onChange={setWM} />
+          </div>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <span style={{ fontSize: 12, color: "#444", fontWeight: 500 }}>生成音频</span>
+            <Toggle on={generateAudio} onChange={setGenerateAudio} />
+          </div>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <span style={{ fontSize: 12, color: "#444", fontWeight: 500 }}>返回尾帧</span>
+            <Toggle on={returnLastFrame} onChange={setReturnLastFrame} />
+          </div>
+          {mode === "t2v" &&
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <span style={{ fontSize: 12, color: "#444", fontWeight: 500 }}>联网搜索</span>
+            <Toggle on={webSearch} onChange={setWebSearch} />
+          </div>}
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <div>
+              <span style={{ fontSize: 12, color: "#444", fontWeight: 500 }}>固定镜头</span>
+              <div style={{ fontSize: 10.5, color: "#aaa", marginTop: 1 }}>禁用画面镜头运动</div>
+            </div>
+            <Toggle on={fixedCam} onChange={setFixedCam} />
+          </div>
+        </div>
+
+        {/* seed */}
+        <div>
+          <div className="fl">随机种子（可选）</div>
+          <div style={{ display: "flex", gap: 6 }}>
+            <input value={seed} onChange={(e) => setSeed(e.target.value)} placeholder="留空则随机"
+            style={{ flex: 1, height: 32, borderRadius: 8, border: "1.5px solid #eee", background: "#fafafa", padding: "0 10px", fontSize: 12, outline: "none" }} />
+            <button onClick={() => setSeed(String(Math.floor(Math.random() * 9999999)))}
+            style={{ height: 32, padding: "0 10px", borderRadius: 8, border: "1.5px solid #eee", background: "#f5f5f5", fontSize: 11, cursor: "pointer", color: "#666" }}>
+              随机
+            </button>
+          </div>
+        </div>
+
+      </div>
+      <div className="panel-footer">
+        <button onClick={go} disabled={!ok} className={"btn-gen" + (ok ? " ok" : " no")}>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 17l-6.2 4.3 2.4-7.4L2 9.4h7.6z" /></svg>
+          生成视频
+        </button>
+      </div>
+    </div>);
+
+}
+
+// ── DetailPanel ───────────────────────────────────────────────────────
+function fmtTime(ts) {
+  if (!ts) return "—";
+  const d = new Date(ts);const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}/${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+function DetailPanel({ node, onClose, onPreview, onDownload, onRegen, onDelete }) {
+  const refs = [];
+  if (node.startImg) refs.push({ src: node.startImg, label: "首帧", kind: "image" });
+  if (node.endImg) refs.push({ src: node.endImg, label: "尾帧", kind: "image" });
+  if (node.editVideo) node.editVideo.forEach((r, i) => refs.push({ src: r.url, label: "编辑视频" + (i + 1), kind: "video" }));
+  if (node.refImages) node.refImages.forEach((r, i) => refs.push({ src: r.url, label: "图片" + (i + 1), kind: "image" }));
+  if (node.refVideos) node.refVideos.forEach((r, i) => refs.push({ src: r.url, label: "视频" + (i + 1), kind: "video" }));
+  if (node.refAudios) node.refAudios.forEach((r, i) => refs.push({ src: r.url, label: "音频" + (i + 1), kind: "audio" }));
+
+  return (
+    <div className="panel">
+      <div className="ph">
+        <div><div className="pt">视频详情</div><div className="ps">{node.modelLabel}</div></div>
+        <button className="pc" onClick={onClose}>
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 6L6 18M6 6l12 12" /></svg>
+        </button>
+      </div>
+      <div className="pb">
+        {/* Thumbnail / preview */}
+        <div onClick={node.status === "done" ? onPreview : undefined}
+        style={{ borderRadius: 10, overflow: "hidden", background: "#111", aspectRatio: aspectValue(node.ar), display: "flex", alignItems: "center", justifyContent: "center", position: "relative", cursor: node.status === "done" ? "pointer" : "default" }}>
+          {node.status === "done" && <div style={{ position: "absolute", inset: 0, background: "linear-gradient(135deg,#1a1a2e,#16213e,#0f3460)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <div style={{ width: 44, height: 44, borderRadius: 22, background: "rgba(255,255,255,.18)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="white"><path d="M8 5v14l11-7z" /></svg>
+            </div>
+          </div>}
+          {node.status !== "done" && <span style={{ color: "rgba(255,255,255,.4)", fontSize: 12 }}>生成中…</span>}
+        </div>
+
+        {/* Title */}
+        <div>
+          <div className="fl">标题</div>
+          <div style={{ fontSize: 13.5, color: "#111", fontWeight: 500, lineHeight: 1.4 }}>{node.title || node.prompt?.slice(0, 30) || "未命名视频"}</div>
+        </div>
+
+        {/* Reference materials */}
+        {refs.length > 0 &&
+        <div>
+            <div className="fl">参考素材</div>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {refs.map((r, i) =>
+            <div key={i} style={{ position: "relative", width: 64, height: 64, borderRadius: 8, overflow: "hidden", background: "#f0f0f0", border: "1px solid #e8e8e8" }}>
+                  {r.kind === "image" ?
+              <img src={r.src} style={{ width: "100%", height: "100%", objectFit: "cover" }} /> :
+              r.kind === "video" ?
+              <video src={r.src} muted style={{ width: "100%", height: "100%", objectFit: "cover" }} /> :
+              <div className="audio-chip" style={{ width: "100%", height: "100%" }}><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3v10.5A4 4 0 1 1 10 10V5h10v3H12z" /></svg></div>}
+                  <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, background: "linear-gradient(transparent,rgba(0,0,0,.6))", color: "#fff", fontSize: 9, padding: "6px 4px 3px", textAlign: "center", fontWeight: 500 }}>{r.label}</div>
+                </div>
+            )}
+            </div>
+          </div>
+        }
+
+        {/* Prompt */}
+        {node.prompt &&
+        <div>
+            <div className="fl">提示词</div>
+            <div style={{ background: "#f7f7f7", borderRadius: 8, padding: "9px 11px", fontSize: 12, color: "#333", lineHeight: 1.55 }}>{node.prompt}</div>
+            {node.neg && <div style={{ background: "#fdf6f6", borderRadius: 8, padding: "7px 11px", fontSize: 11, color: "#a06060", lineHeight: 1.5, marginTop: 5 }}><span style={{ fontWeight: 600, marginRight: 4 }}>负向：</span>{node.neg}</div>}
+          </div>
+        }
+
+        {/* Params */}
+        <div>
+          <div className="fl">参数</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+            {[
+            ["比例", node.ar],
+            ["分辨率", node.resolution],
+            ["时长", node.duration + "s"],
+            ["模式", MODE_LABELS[node.mode] || "视频生成"],
+            ["水印", node.watermark ? "开" : "关"],
+            ["固定镜头", node.fixedCam ? "开" : "关"],
+            ["生成音频", node.generateAudio ? "开" : "关"],
+            ["返回尾帧", node.returnLastFrame ? "开" : "关"],
+            ...(node.webSearch ? [["联网搜索", "开"]] : []),
+            ...(node.seed ? [["种子", node.seed]] : [])].
+            map(([k, v]) =>
+            <div key={k} style={{ background: "#f7f7f7", borderRadius: 7, padding: "7px 9px" }}>
+                <div style={{ fontSize: 9.5, color: "#999", fontWeight: 600, letterSpacing: "0.05em", textTransform: "uppercase", marginBottom: 1 }}>{k}</div>
+                <div style={{ fontSize: 12, color: "#111", fontWeight: 500, fontVariantNumeric: "tabular-nums" }}>{v}</div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Generation time */}
+        <div>
+          <div className="fl">生成时间</div>
+          <div style={{ fontSize: 12, color: "#555", fontVariantNumeric: "tabular-nums" }}>{fmtTime(node.createdAt)}</div>
+        </div>
+
+        {/* Actions */}
+        <div style={{ display: "flex", gap: 6 }}>
+          <button onClick={onDownload} disabled={node.status !== "done"} style={{ flex: 1, padding: "9px 0", borderRadius: 9, border: "1.5px solid #e0e0e0", background: "#fff", fontSize: 12.5, fontWeight: 500, cursor: node.status === "done" ? "pointer" : "not-allowed", color: node.status === "done" ? "#111" : "#bbb", display: "flex", alignItems: "center", justifyContent: "center", gap: 5 }}>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
+            下载
+          </button>
+          <button onClick={onRegen} style={{ flex: 1, padding: "9px 0", borderRadius: 9, border: "1.5px solid #e0e0e0", background: "#fff", fontSize: 12.5, fontWeight: 500, cursor: "pointer", color: "#111" }}>重新生成</button>
+        </div>
+      </div>
+    </div>);
+
+}
+
+// ── PreviewModal ─────────────────────────────────────────────────────
+function PreviewModal({ node, onClose }) {
+  const [a, b] = FRAME_AR[node.ar] || [16, 9];
+  React.useEffect(() => {
+    function onKey(e) {if (e.key === "Escape") onClose();}
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  return (
+    <div className="modal-bg" onClick={onClose}>
+      <div className="modal-frame" style={{ aspectRatio: `${a}/${b}` }} onClick={(e) => e.stopPropagation()}>
+        <div style={{ position: "absolute", inset: 0, background: "linear-gradient(135deg,#1a1a2e,#16213e,#0f3460)", borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ width: 72, height: 72, borderRadius: 36, background: "rgba(255,255,255,0.2)", backdropFilter: "blur(8px)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}>
+            <svg width="30" height="30" viewBox="0 0 24 24" fill="white"><path d="M8 5v14l11-7z" /></svg>
+          </div>
+        </div>
+        <div style={{ position: "absolute", bottom: -32, left: 0, right: 0, textAlign: "center", color: "rgba(255,255,255,.6)", fontSize: 11.5 }}>
+          {node.modelLabel} · {node.ar} · {node.resolution} · {node.duration}s
+        </div>
+      </div>
+      <button className="modal-x" onClick={onClose}>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12" /></svg>
+      </button>
+    </div>);
+
+}
+
+// ── AgentPanel ────────────────────────────────────────────────────────
+function AgentPanel({ onClose, nodes }) {
+  const { useState: us } = React;
+  const [msg, setMsg] = us("");
+  const recentDone = nodes.filter((n) => n.status === "done").slice(-5);
+  return (
+    <div className="floatp">
+      <div className="fp-hd">
+        <div className="fp-ttl">
+          <span>无声漫画叙事生成</span>
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M6 9l6 6 6-6" /></svg>
+        </div>
+        <button className="fp-min" onClick={onClose} title="收起">
+          <svg width="14" height="2" viewBox="0 0 14 2"><rect width="14" height="2" rx="1" fill="#666" /></svg>
+        </button>
+      </div>
+      <div className="fp-bd">
+        <p className="ag-msg">该开始生成画面并组装页面了。</p>
+
+        <div className="plan-blk">
+          <div className="plan-hd">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#999" strokeWidth="1.8"><rect x="5" y="4" width="14" height="17" rx="2" /><path d="M9 9h6M9 13h6M9 17h4" /></svg>
+            <span>更新计划</span><span className="plan-prog">1/3</span>
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#999" strokeWidth="2.5"><path d="M6 9l6 6 6-6" /></svg>
+          </div>
+          <div className="plan-items">
+            {[
+            ["done", "所有角色与场景参考的一致性检查"],
+            ["doing", "顺序生成各漫画分镜（共 6 格），保持画风一致"],
+            ["todo", "组装最终漫画页 — 全页网格，自右向左阅读"]].
+            map(([s, t], i) =>
+            <div key={i} className={"plan-item s-" + s}>
+                {s === "done" ?
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#666" strokeWidth="3" strokeLinecap="round"><path d="M5 12l5 5 9-11" /></svg> :
+              <svg width="9" height="9" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.5" fill="none" stroke="#999" strokeWidth="1.5" /></svg>}
+                <span>{t}</span>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="task-card">
+          <div className="tc-hd">
+            <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+              <span style={{ width: 7, height: 7, borderRadius: 4, background: "#111", display: "inline-block" }} />
+              <span style={{ fontSize: 12.5, fontWeight: 600, color: "#111" }}>分镜画面与组装</span>
+            </div>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="#f59e0b"><path d="M12 2L1 21h22L12 2zm0 6l7.5 13h-15L12 8zm-1 4v4h2v-4h-2zm0 6v2h2v-2h-2z" /></svg>
+          </div>
+          <div style={{ fontSize: 12, color: "#666", margin: "6px 0 8px" }}>生成失败</div>
+          <a className="tc-link">查看过程</a>
+          <div className="tc-thumbs">
+            {recentDone.length > 0 ? recentDone.map((n) =>
+            <div key={n.id} className="tc-thumb" style={{ background: "linear-gradient(135deg,#1a1a2e,#16213e,#0f3460)" }}>
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="rgba(255,255,255,0.7)"><path d="M8 5v14l11-7z" /></svg>
+              </div>
+            ) : [0, 1, 2, 3, 4].map((i) =>
+            <div key={i} className="tc-thumb" style={{ background: `linear-gradient(135deg,hsl(${i * 40 + 30},6%,${88 - i * 3}%),hsl(${i * 40 + 50},6%,${94 - i * 2}%))` }} />
+            )}
+          </div>
+        </div>
+
+        <p className="ag-msg">画面正在按顺序逐一生成 — 每一帧都基于前一帧，以保持统一的笔触风格。从空荡的狗屋开始，到女孩的寻找、父亲的抚慰，最后展开广阔的天空，狗在其中奔跑。</p>
+        <p className="ag-msg" style={{ color: "#888" }}>这会花点时间，每个分镜逐帧生成以确保一致。完成后我会再通知你。</p>
+      </div>
+
+      <div className="fp-ft">
+        <textarea className="ag-in" placeholder="想做点什么？" value={msg} onChange={(e) => setMsg(e.target.value)} style={{ padding: "10px 14px 0px" }} />
+        <div className="ag-bar" style={{ padding: "0px 8px 6px 12px", lineHeight: "0" }}>
+          <button className="ag-mode">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l1.4 4.6L18 8l-4.6 1.4L12 14l-1.4-4.6L6 8l4.6-1.4z" /></svg>
+            <span>创建</span>
+            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M6 9l6 6 6-6" /></svg>
+          </button>
+          <div style={{ flex: 1 }} />
+          <button className="ag-mic" title="语音">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><rect x="9" y="2" width="6" height="13" rx="3" /><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v3" /></svg>
+          </button>
+          <button className="ag-send" title="发送">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 19V5M5 12l7-7 7 7" /></svg>
+          </button>
+        </div>
+      </div>
+    </div>);
+
+}
+
+// ── AssetsPanel ────────────────────────────────────────────────────────
+const MOCK_ASSETS = [
+{ kind: "image", title: "漫画风格的安静狗屋庭院", grad: "linear-gradient(135deg,#eaeaea,#f8f8f8)", sketch: "house" },
+{ kind: "image", title: "短发男人与他的女儿站在一起", grad: "linear-gradient(135deg,#f0ede5,#fafafa)", sketch: "two" },
+{ kind: "image", title: "漫画风格——女孩在寻找小狗", grad: "linear-gradient(135deg,#ececec,#fcfcfc)", sketch: "girl" },
+{ kind: "text", title: "环境参考指南 — 漫画页", body: "位置1：狗屋区域\n风格：黑白漫画墨线艺术，细腻线条、交叉阴影、网点处理。受谷口治郎启发。" },
+{ kind: "text", title: "父亲角色参考集", body: "黑白日式漫画墨线画风\n谷口治郎风格的柔和现实主义\n\n角色描述：温和的父亲，35 岁左右，略高于平均…" },
+{ kind: "image", title: "铅笔素描风格的小狗屋", grad: "linear-gradient(135deg,#e8e8e6,#f6f6f4)", sketch: "house" },
+{ kind: "image", title: "素描风格庭院与狗屋", grad: "linear-gradient(135deg,#e6e6e8,#f4f4f6)", sketch: "house" },
+{ kind: "image", title: "穿格子裙的小女孩", grad: "linear-gradient(135deg,#e8ebe8,#f6f8f6)", sketch: "girl" },
+{ kind: "text", title: "角色参考集 — 漫画女孩", body: "角色：5–6 岁小女孩。短乱发与刘海。大而富有表现力的漫画眼睛…" },
+{ kind: "image", title: "图形小说风格男性肖像", grad: "linear-gradient(135deg,#ededed,#f9f9f9)", sketch: "two" }];
+
+function Sketch({ kind }) {
+  const com = <g stroke="#999" strokeWidth="0.8" fill="none" strokeLinecap="round" strokeLinejoin="round" />;
+  if (kind === "house") return <svg viewBox="0 0 100 100" style={{ width: "100%", height: "100%" }}>
+    <g stroke="#a0a0a0" strokeWidth="0.6" fill="none">
+      <path d="M30 60 L50 42 L70 60 L70 80 L30 80 Z" />
+      <path d="M45 80 L45 65 L55 65 L55 80" />
+      <path d="M10 80 L90 80" />
+      <path d="M15 78 Q25 73 35 76" />
+      <circle cx="80" cy="35" r="4" /><path d="M75 32 Q80 28 85 33" />
+    </g>
+  </svg>;
+  if (kind === "girl") return <svg viewBox="0 0 100 100" style={{ width: "100%", height: "100%" }}>
+    <g stroke="#a0a0a0" strokeWidth="0.6" fill="none">
+      <ellipse cx="50" cy="28" rx="9" ry="11" />
+      <path d="M41 22 Q45 16 50 18 Q55 16 59 22" />
+      <path d="M44 40 L42 70 L58 70 L56 40 Z" />
+      <path d="M44 50 L56 50 M44 55 L56 55 M44 60 L56 60" />
+      <path d="M42 70 L40 92 M58 70 L60 92" />
+    </g>
+  </svg>;
+  if (kind === "two") return <svg viewBox="0 0 100 100" style={{ width: "100%", height: "100%" }}>
+    <g stroke="#a0a0a0" strokeWidth="0.6" fill="none">
+      <ellipse cx="35" cy="32" rx="7" ry="9" />
+      <path d="M30 50 L25 88 M40 50 L42 88" />
+      <path d="M30 50 L42 50 L42 65 L30 65 Z" />
+      <ellipse cx="65" cy="42" rx="5" ry="6" />
+      <path d="M62 55 L60 88 M68 55 L70 88" />
+      <path d="M62 55 L70 55 L70 70 L62 70 Z" />
+    </g>
+  </svg>;
+  return null;
+}
+function AssetsPanel({ onClose, nodes }) {
+  const { useState: us } = React;
+  const [q, setQ] = us("");
+  // mix mock + completed video nodes as "video" asset
+  const videos = nodes.filter((n) => n.status === "done").map((n) => ({
+    kind: "video", title: n.title || n.prompt?.slice(0, 24) || "视频", grad: "linear-gradient(135deg,#1a1a2e,#16213e,#0f3460)", node: n
+  }));
+  const all = [...videos, ...MOCK_ASSETS].filter((a) => !q || a.title.includes(q));
+  const cols = [[], []];
+  all.forEach((a, i) => cols[i % 2].push({ ...a, _i: i }));
+  return (
+    <div className="floatp ap">
+      <div className="fp-hd">
+        <div className="fp-ttl"><span>资产库</span></div>
+        <button className="fp-min" onClick={onClose} title="收起">
+          <svg width="14" height="2" viewBox="0 0 14 2"><rect width="14" height="2" rx="1" fill="#666" /></svg>
+        </button>
+      </div>
+      <div className="ap-search-row">
+        <div className="ap-search">
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜索资产…" />
+          <span className="ap-kbd">⌘F</span>
+        </div>
+        <button className="ap-filter" title="筛选">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#666" strokeWidth="2" strokeLinecap="round"><line x1="3" y1="6" x2="21" y2="6" /><line x1="6" y1="12" x2="18" y2="12" /><line x1="10" y1="18" x2="14" y2="18" /></svg>
+        </button>
+      </div>
+      <div className="ap-grid">
+        {cols.map((col, ci) =>
+        <div key={ci} className="ap-col">
+            {col.map((a, i) =>
+          <div key={a._i} className="ap-card">
+                {a.kind === "image" || a.kind === "video" ?
+            <div className="ap-thumb" style={{ background: a.grad, aspectRatio: i % 3 === 0 ? "4/5" : i % 3 === 1 ? "1/1" : "3/4" }}>
+                    {a.kind === "image" && <Sketch kind={a.sketch} />}
+                    {a.kind === "video" && <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}><div style={{ width: 24, height: 24, borderRadius: 12, background: "rgba(255,255,255,0.22)", display: "flex", alignItems: "center", justifyContent: "center" }}><svg width="10" height="10" viewBox="0 0 24 24" fill="white"><path d="M8 5v14l11-7z" /></svg></div></div>}
+                  </div> :
+
+            <div className="ap-text">
+                    <div className="ap-text-title">{a.title}</div>
+                    <div className="ap-text-body">{a.body}</div>
+                  </div>
+            }
+                <div className="ap-name">{a.title.length > 14 ? a.title.slice(0, 14) + "…" : a.title}</div>
+                <div className="ap-kind">{a.kind === "image" ? "图片" : a.kind === "text" ? "文本" : "视频"}</div>
+              </div>
+          )}
+          </div>
+        )}
+      </div>
+    </div>);
+
+}
+
+Object.assign(window, { VNode, CreatePanel, DetailPanel, PreviewModal, AgentPanel, AssetsPanel, frameSize, FRAME_AR });
+
+</script>
+<template id="__bundler_thumbnail" data-bg-color="#f1f1f1">
+<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"><rect x="20" y="28" width="60" height="44" rx="4" fill="none" stroke="#111" stroke-width="2"/><path d="M44 44l16 9-16 9z" fill="#111"/></svg>
+</template>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,'SF Pro Display',sans-serif;background:#e5e5e5;overflow:hidden;width:100vw;height:100vh}
+#root{width:100%;height:100%}
+input,textarea,button,select{font-family:inherit}
+::-webkit-scrollbar{width:4px}::-webkit-scrollbar-thumb{background:#d0d0d0;border-radius:2px}
+
+.topbar{position:fixed;top:0;left:0;right:0;height:48px;display:flex;align-items:center;justify-content:space-between;padding:0 16px;z-index:200;pointer-events:none}
+.topbar>*{pointer-events:all}
+.tb-left{display:flex;align-items:center;gap:8px}
+.tb-right{display:flex;align-items:center;gap:8px}
+.tb-title{font-size:13px;font-weight:500;color:#111;cursor:pointer;padding:4px 8px;border-radius:6px;transition:background .15s;display:flex;align-items:center;gap:4px}
+.tb-title:hover{background:rgba(0,0,0,.07)}
+.btn-black{background:#111;color:#fff;border:none;border-radius:20px;padding:6px 14px;font-size:13px;font-weight:500;cursor:pointer;display:flex;align-items:center;gap:5px;transition:opacity .15s}
+.btn-black:hover{opacity:.8}
+.btn-white{background:#fff;border:1px solid #ddd;border-radius:8px;padding:6px 14px;font-size:13px;font-weight:500;cursor:pointer;color:#111;transition:background .15s}
+.btn-white:hover{background:#f5f5f5}
+
+.toolbar{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#1c1c1c;border-radius:30px;padding:6px 10px;display:flex;align-items:center;gap:2px;z-index:200;box-shadow:0 4px 24px rgba(0,0,0,.25)}
+.tool-btn{width:36px;height:36px;border:none;border-radius:50%;background:transparent;color:rgba(255,255,255,.55);cursor:pointer;display:flex;align-items:center;justify-content:center;transition:background .15s,color .15s;position:relative}
+.tool-btn:hover{background:rgba(255,255,255,.12);color:#fff}
+.tool-btn.on{background:rgba(255,255,255,.18);color:#fff}
+.t-sep{width:1px;height:20px;background:rgba(255,255,255,.12);margin:0 4px}
+.t-tip{position:absolute;bottom:calc(100% + 8px);left:50%;transform:translateX(-50%);background:#111;color:#fff;font-size:10.5px;padding:3px 8px;border-radius:5px;white-space:nowrap;pointer-events:none;opacity:0;transition:opacity .1s}
+.tool-btn:hover .t-tip{opacity:1}
+
+.zoom-bar{position:fixed;bottom:20px;left:16px;background:#fff;border:1px solid #e0e0e0;border-radius:8px;display:flex;align-items:center;z-index:200;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.06)}
+.minimap{position:fixed;bottom:60px;left:16px;width:140px;height:96px;background:#fff;border:1px solid #e0e0e0;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,.06);z-index:200;overflow:hidden;cursor:crosshair}
+.mm-node{position:absolute;background:#999;border-radius:1px}
+.mm-node.sel{background:#111}
+.mm-vp{position:absolute;border:1.5px solid rgba(17,17,17,.55);background:rgba(0,0,0,.05);border-radius:5px;cursor:move;box-sizing:border-box;pointer-events:auto}
+
+.fab-group{position:fixed;bottom:20px;right:16px;display:flex;align-items:center;gap:2px;background:#fff;border-radius:24px;padding:5px;box-shadow:0 2px 10px rgba(0,0,0,.08),0 0 0 1px rgba(0,0,0,.04);z-index:200}
+.fab{display:flex;align-items:center;justify-content:center;width:38px;height:38px;border-radius:19px;background:transparent;border:none;cursor:pointer;color:#666;transition:all .15s}
+.fab:hover{background:#f3f3f3;color:#111}
+.fab.active{background:#111;color:#fff}
+.fab.active:hover{background:#000;color:#fff}
+
+/* floating panel (agent/assets) */
+.floatp{position:fixed;right:16px;bottom:74px;width:360px;height:720px;max-height:calc(100vh - 100px);background:#f1f1f1;border-radius:18px;box-shadow:0 8px 32px rgba(0,0,0,.12),0 0 0 1px rgba(0,0,0,.04);display:flex;flex-direction:column;z-index:150;overflow:hidden;font-family:inherit}
+.floatp.ap{width:380px}
+.fp-hd{display:flex;align-items:center;justify-content:space-between;padding:16px 18px 10px}
+.fp-ttl{display:flex;align-items:center;gap:6px;font-size:14px;font-weight:600;color:#111;cursor:pointer}
+.fp-ttl:hover{color:#000}
+.fp-min{background:none;border:none;cursor:pointer;padding:6px;border-radius:6px;display:flex;align-items:center;justify-content:center}
+.fp-min:hover{background:#e3e3e3}
+.fp-bd{flex:1;overflow-y:auto;padding:6px 18px 14px}
+.fp-bd::-webkit-scrollbar{width:6px}.fp-bd::-webkit-scrollbar-thumb{background:rgba(0,0,0,.15);border-radius:3px}
+.ag-msg{font-size:13px;line-height:1.55;color:#222;margin:8px 0}
+.plan-blk{margin:12px 0;padding-left:11px;border-left:1.5px solid #d8d8d8}
+.plan-hd{display:flex;align-items:center;gap:5px;color:#888;font-size:12px;margin-bottom:8px}
+.plan-prog{font-size:11.5px}
+.plan-items{display:flex;flex-direction:column;gap:7px}
+.plan-item{display:flex;align-items:flex-start;gap:8px;font-size:12.5px;color:#444;line-height:1.45}
+.plan-item.s-done{color:#888}
+.plan-item.s-done span{text-decoration:line-through;text-decoration-color:#c0c0c0}
+.plan-item svg{flex-shrink:0;margin-top:3px}
+.task-card{margin:14px 0;background:#fafafa;border:1px solid #e6e6e6;border-radius:10px;padding:12px 13px}
+.tc-hd{display:flex;align-items:center;justify-content:space-between}
+.tc-link{display:inline-block;font-size:12px;color:#222;text-decoration:underline;cursor:pointer;margin-bottom:10px}
+.tc-thumbs{display:flex;gap:5px;flex-wrap:wrap}
+.tc-thumb{width:42px;height:42px;border-radius:6px;border:1px solid #e0e0e0;background:#eee;display:flex;align-items:center;justify-content:center;overflow:hidden}
+.fp-ft{padding:10px 14px 14px;background:#f1f1f1}
+.ag-in{display:block;width:100%;background:#fff;border:1px solid #e2e2e2;border-radius:14px 14px 0 0;padding:10px 14px;font-size:13px;line-height:1.4;color:#222;resize:none;height:44px;font-family:inherit;outline:none;box-sizing:border-box;border-bottom:none;vertical-align:top;margin:0}
+.ag-in:focus{border-color:#d0d0d0}
+.ag-in::placeholder{color:#aaa}
+.ag-bar{background:#fff;border:1px solid #e2e2e2;border-top:none;border-radius:0 0 14px 14px;padding:6px 8px 6px 12px;display:flex;align-items:center;gap:6px;margin-top:-1px}
+.ag-mode{display:flex;align-items:center;gap:5px;background:transparent;border:none;color:#666;font-size:12px;cursor:pointer;padding:4px 6px;border-radius:5px}
+.ag-mode:hover{background:#f3f3f3}
+.ag-mic{width:28px;height:28px;border-radius:14px;background:transparent;border:none;color:#777;cursor:pointer;display:flex;align-items:center;justify-content:center}
+.ag-mic:hover{background:#f3f3f3;color:#222}
+.ag-send{width:28px;height:28px;border-radius:14px;background:#d8d8d8;border:none;color:#666;cursor:pointer;display:flex;align-items:center;justify-content:center}
+.ag-send:hover{background:#111;color:#fff}
+
+/* assets */
+.ap-search-row{display:flex;gap:8px;padding:0 18px 12px;border-bottom:1px solid #e4e4e4;margin-bottom:8px}
+.ap-search{flex:1;display:flex;align-items:center;background:#fff;border:1px solid #e2e2e2;border-radius:18px;padding:7px 14px;height:34px;box-sizing:border-box}
+.ap-search input{flex:1;border:none;background:none;outline:none;font-size:13px;color:#222;font-family:inherit}
+.ap-search input::placeholder{color:#aaa}
+.ap-kbd{font-size:11px;color:#bbb;background:#f3f3f3;padding:2px 6px;border-radius:4px}
+.ap-filter{width:34px;height:34px;border-radius:17px;background:#fff;border:1px solid #e2e2e2;cursor:pointer;display:flex;align-items:center;justify-content:center}
+.ap-filter:hover{background:#f5f5f5}
+.ap-grid{padding:0 14px 14px;display:flex;gap:8px;overflow-y:auto;flex:1}
+.ap-grid::-webkit-scrollbar{width:6px}.ap-grid::-webkit-scrollbar-thumb{background:rgba(0,0,0,.15);border-radius:3px}
+.ap-col{flex:1;display:flex;flex-direction:column;gap:14px;min-width:0}
+.ap-card{display:flex;flex-direction:column;cursor:pointer}
+.ap-thumb{position:relative;width:100%;border-radius:8px;overflow:hidden;border:1px solid #e8e8e8;display:flex;align-items:center;justify-content:center}
+.ap-text{background:#fff;border:1px solid #e6e6e6;border-radius:8px;padding:10px 11px;min-height:110px}
+.ap-text-title{font-size:10.5px;font-weight:600;color:#222;margin-bottom:6px;line-height:1.3}
+.ap-text-body{font-size:9px;color:#666;line-height:1.4;white-space:pre-line}
+.ap-name{font-size:12.5px;font-weight:600;color:#111;margin:6px 2px 1px;line-height:1.3}
+.ap-kind{font-size:11px;color:#999;margin:0 2px}
+.zb-btn{width:28px;height:28px;border:none;background:transparent;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:16px;color:#555;transition:background .12s}
+.zb-btn:hover{background:#f0f0f0}
+.zb-val{font-size:11.5px;font-weight:500;color:#666;min-width:42px;text-align:center;border-left:1px solid #eee;border-right:1px solid #eee}
+
+.cv-root{width:100%;height:100%;position:relative;overflow:hidden}
+.cv-bg{position:absolute;inset:0;background:#e5e5e5;background-image:radial-gradient(circle,#b8b8b8 1px,transparent 1px);background-size:24px 24px}
+.cv-world{position:absolute;top:0;left:0;transform-origin:0 0}
+
+.vnode{position:absolute;cursor:grab;user-select:none}
+.vnode-card{border-radius:8px;overflow:hidden;border:1.5px solid rgba(0,0,0,.14);background:#d4d4d4;position:relative;display:flex;align-items:center;justify-content:center;transition:border-color .15s,box-shadow .15s}
+.vnode.sel .vnode-card{border-color:#2563eb;box-shadow:0 0 0 2.5px rgba(37,99,235,.25)}
+.vnode-card:hover{border-color:rgba(0,0,0,.28)}
+.vnode-lbl{font-size:10.5px;color:#888;margin-top:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sel-dot{position:absolute;width:7px;height:7px;background:#fff;border:1.5px solid #2563eb;border-radius:2px}
+
+.ntb{position:absolute;top:-42px;left:50%;transform:translateX(-50%);background:#1c1c1c;border-radius:20px;padding:4px 5px;display:flex;align-items:center;gap:1px;white-space:nowrap;box-shadow:0 6px 20px rgba(0,0,0,.28);z-index:20}
+.ntb-btn{background:none;border:none;color:#bbb;cursor:pointer;padding:6px 8px;border-radius:14px;transition:all .12s;display:flex;align-items:center;justify-content:center}
+.ntb-btn:hover:not(:disabled){background:rgba(255,255,255,.14);color:#fff}
+.ntb-sep{width:1px;height:14px;background:rgba(255,255,255,.12);margin:0 2px}
+
+.slider{-webkit-appearance:none;appearance:none;width:100%;height:4px;border-radius:2px;background:#e8e8e8;outline:none;cursor:pointer}
+.slider::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:14px;height:14px;border-radius:50%;background:#111;cursor:pointer;border:2px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,.2)}
+.slider::-moz-range-thumb{width:14px;height:14px;border-radius:50%;background:#111;cursor:pointer;border:2px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,.2)}
+
+.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.78);z-index:300;display:flex;align-items:center;justify-content:center;animation:fade .2s ease;padding:40px}
+@keyframes fade{from{opacity:0}to{opacity:1}}
+.modal-frame{position:relative;max-width:80vw;height:75vh}
+.modal-x{position:fixed;top:20px;right:24px;width:36px;height:36px;border-radius:18px;background:rgba(255,255,255,.12);border:none;color:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(6px);transition:background .15s}
+.modal-x:hover{background:rgba(255,255,255,.22)}
+
+.panel{position:fixed;top:56px;right:16px;width:310px;max-height:calc(100vh - 72px);background:#fff;border-radius:16px;box-shadow:0 8px 40px rgba(0,0,0,.12),0 0 0 1px rgba(0,0,0,.06);z-index:100;overflow:hidden;animation:pin .18s ease;display:flex;flex-direction:column}
+@keyframes pin{from{opacity:0;transform:translateY(-6px) scale(.98)}to{opacity:1;transform:none}}
+.ph{padding:13px 16px 10px;border-bottom:1px solid #f0f0f0;display:flex;align-items:flex-start;justify-content:space-between}
+.ph-drag{cursor:move;user-select:none}
+.pt{font-size:15px;font-weight:600;color:#111}
+.ps{font-size:11px;color:#999;margin-top:2px}
+.pc{width:26px;height:26px;border-radius:13px;border:none;background:#f0f0f0;cursor:pointer;display:flex;align-items:center;justify-content:center;color:#666}
+.pb{padding:14px 16px 18px;display:flex;flex-direction:column;gap:14px;overflow-y:auto;min-height:0;flex:1}
+.panel-footer{position:relative;flex-shrink:0;padding:12px 16px 14px;background:#fff;border-top:1px solid #f4f4f4}
+.panel-footer::before{content:"";position:absolute;left:0;right:0;top:-28px;height:28px;background:linear-gradient(to bottom,rgba(255,255,255,0),#fff);pointer-events:none}
+.fl{font-size:10px;font-weight:600;color:#999;letter-spacing:.06em;text-transform:uppercase;margin-bottom:6px}
+.seg{display:flex;background:#f3f3f3;border-radius:9px;padding:3px;gap:3px}
+.seg-tab{flex:1;padding:6px 0;border-radius:7px;border:none;font-size:12px;font-weight:500;cursor:pointer;transition:all .15s;background:transparent;color:#999}
+.seg-tab.on{background:#fff;color:#111;box-shadow:0 1px 4px rgba(0,0,0,.1)}
+.mode-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px}
+.mode-tab{height:30px;border-radius:8px;border:1.5px solid #e7e7e7;background:#fff;color:#666;font-size:11px;font-weight:600;cursor:pointer;transition:all .14s;white-space:nowrap}
+.mode-tab.on{background:#111;border-color:#111;color:#fff}
+.mode-tab:hover:not(.on){border-color:#bbb;color:#111}
+.pill{padding:4px 11px;border-radius:20px;font-size:12px;font-weight:500;cursor:pointer;border:1.5px solid #e0e0e0;background:#fff;color:#555;transition:all .12s}
+.pill.on{border-color:#111;background:#111;color:#fff}
+.pill:hover:not(.on){border-color:#bbb}
+.pill.off{opacity:.35;cursor:not-allowed;text-decoration:line-through}
+.ta{width:100%;min-height:78px;padding:10px 12px;font-size:13px;line-height:1.5;border:1.5px solid #eee;border-radius:10px;background:#fafafa;resize:none;outline:none;color:#222;transition:border-color .15s}
+.ta:focus{border-color:#aaa;background:#fff}
+.ta::placeholder{color:#bbb}
+.imgslot{flex:1;height:70px;border-radius:10px;border:1.5px dashed #ddd;background:#f8f8f8;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;cursor:pointer;position:relative;overflow:hidden}
+.imgslot:hover{border-color:#aaa;background:#f0f0f0}
+.imgslot img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.add-asset{height:34px;padding:0 10px;border-radius:9px;border:1.5px dashed #d8d8d8;background:#fafafa;color:#777;font-size:11px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:5px}
+.add-asset:hover{border-color:#aaa;background:#f3f3f3;color:#111}
+.asset-chip{width:62px;height:62px;border-radius:9px;position:relative;overflow:hidden;background:#f5f5f5;border:1px solid #e4e4e4;display:flex;align-items:center;justify-content:center}
+.asset-chip img,.asset-chip video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.asset-chip span{position:absolute;left:0;right:0;bottom:0;padding:9px 3px 3px;background:linear-gradient(transparent,rgba(0,0,0,.62));color:#fff;font-size:9px;font-weight:600;text-align:center}
+.asset-chip button{position:absolute;top:3px;right:3px;width:17px;height:17px;border-radius:9px;border:none;background:rgba(0,0,0,.55);color:#fff;font-size:12px;line-height:17px;cursor:pointer}
+.audio-chip{display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#f6f6f6,#e8e8e8);color:#777}
+.tgl{width:36px;height:20px;border-radius:10px;border:none;position:relative;cursor:pointer;transition:background .2s;flex-shrink:0}
+.tgl-k{position:absolute;top:2px;width:16px;height:16px;background:#fff;border-radius:8px;transition:left .2s;box-shadow:0 1px 3px rgba(0,0,0,.2)}
+.btn-gen{width:100%;padding:11px;border-radius:10px;border:none;font-size:14px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:7px;transition:all .15s}
+.btn-gen.ok{background:#111;color:#fff}
+.btn-gen.ok:hover{opacity:.85}
+.btn-gen.no{background:#e0e0e0;color:#aaa;cursor:not-allowed}
+
+.empty{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center;pointer-events:none;z-index:0}
+.empty h3{font-size:17px;color:#c0c0c0;font-weight:400}
+.empty p{font-size:12px;color:#d0d0d0;margin-top:5px}
+
+@keyframes blink{0%,100%{opacity:.3}50%{opacity:1}}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const{useState,useRef,useEffect}=React;
+
+// ── DotGrid: multi-density layered dots that scale with zoom ─────────────
+function DotGrid({pan,zoom}){
+  const ref=useRef();
+  useEffect(()=>{
+    const c=ref.current;if(!c)return;
+    const dpr=window.devicePixelRatio||1;
+    const W=c.offsetWidth,H=c.offsetHeight;
+    c.width=W*dpr;c.height=H*dpr;
+    const ctx=c.getContext("2d");
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+    ctx.clearRect(0,0,W,H);
+
+    // Uniform small dot grid. Subtle, never competes with content.
+    const BASE=24;
+    let step=BASE*zoom;
+    while(step<10)step*=5;
+    while(step>120)step/=5;
+    let alpha=1;
+    if(step<14)alpha=(step-10)/4;
+    if(step>90)alpha=Math.max(0.3,(120-step)/30);
+    alpha=Math.max(0,Math.min(1,alpha));
+
+    const ox=((pan.x%step)+step)%step;
+    const oy=((pan.y%step)+step)%step;
+    ctx.fillStyle=`rgba(150,150,150,${0.4*alpha})`;
+    const r=1;
+    for(let x=ox-step;x<W+step;x+=step){
+      for(let y=oy-step;y<H+step;y+=step){
+        ctx.beginPath();ctx.arc(x,y,r,0,Math.PI*2);ctx.fill();
+      }
+    }
+  },[pan.x,pan.y,zoom]);
+
+  // Track resize
+  useEffect(()=>{
+    function onR(){if(ref.current){ref.current.style.width=window.innerWidth+"px";ref.current.style.height=window.innerHeight+"px";}}
+    onR();window.addEventListener("resize",onR);
+    return()=>window.removeEventListener("resize",onR);
+  },[]);
+
+  return <canvas ref={ref} style={{position:"absolute",inset:0,width:"100%",height:"100%",pointerEvents:"none",background:"#e5e5e5"}}/>;
+}
+
+function Minimap({nodes,selId,pan,zoom,onPan}){
+  const W=140,H=96,PAD=2;
+  // World bounds: union of nodes + viewport, with margin
+  const vpW=window.innerWidth/zoom, vpH=window.innerHeight/zoom;
+  const vx=-pan.x/zoom, vy=-pan.y/zoom;
+  let bx=vx,by=vy,bX=vx+vpW,bY=vy+vpH;
+  for(const n of nodes){
+    const[w,h]=window.frameSize(n.ar,n.resolution);
+    if(n.x<bx)bx=n.x;if(n.y<by)by=n.y;
+    if(n.x+w>bX)bX=n.x+w;if(n.y+h>bY)bY=n.y+h;
+  }
+  // Margin
+  const M=50;bx-=M;by-=M;bX+=M;bY+=M;
+  const bw=bX-bx,bh=bY-by;
+  const s=Math.min((W-PAD*2)/bw,(H-PAD*2)/bh);
+  const ox=PAD+(W-PAD*2-bw*s)/2,oy=PAD+(H-PAD*2-bh*s)/2;
+  function w2m(x,y){return[ox+(x-bx)*s,oy+(y-by)*s];}
+  function m2w(mx,my){return[(mx-ox)/s+bx,(my-oy)/s+by];}
+  function onDown(e){
+    const r=e.currentTarget.getBoundingClientRect();
+    function go(ev){
+      const mx=ev.clientX-r.left,my=ev.clientY-r.top;
+      const[wx,wy]=m2w(mx,my);
+      onPan({x:window.innerWidth/2-wx*zoom,y:window.innerHeight/2-wy*zoom});
+    }
+    go(e);
+    function mv(ev){go(ev);}
+    function up(){window.removeEventListener("mousemove",mv);window.removeEventListener("mouseup",up);}
+    window.addEventListener("mousemove",mv);window.addEventListener("mouseup",up);
+  }
+  const[vx0,vy0]=w2m(vx,vy);
+  return(
+    <div className="minimap" onMouseDown={onDown}>
+      {nodes.map(n=>{
+        const[w,h]=window.frameSize(n.ar,n.resolution);
+        const[mx,my]=w2m(n.x,n.y);
+        return<div key={n.id} className={"mm-node"+(n.id===selId?" sel":"")} style={{left:mx,top:my,width:Math.max(2,w*s),height:Math.max(2,h*s)}}/>;
+      })}
+      <div className="mm-vp" style={{left:vx0,top:vy0,width:vpW*s,height:vpH*s}}/>
+    </div>
+  );
+}
+
+function App(){
+  const[zoom,setZoom]=useState(1);
+  const[pan,setPan]=useState({x:0,y:0});
+  const[nodes,setNodes]=useState([]);
+  const[selId,setSelId]=useState(null);
+  const[tool,setTool]=useState("cursor");
+  const[spaceDown,setSpaceDown]=useState(false);
+  const[panActive,setPanActive]=useState(false);
+  const[panel,setPanel]=useState(null);
+  const[preview,setPreview]=useState(null);
+  const panning=useRef(false);
+  const panStart=useRef(null);
+  const cvRef=useRef();
+  const zoomRef=useRef(zoom);const panRef=useRef(pan);
+  useEffect(()=>{zoomRef.current=zoom;},[zoom]);
+  useEffect(()=>{panRef.current=pan;},[pan]);
+
+  const selNode=nodes.find(n=>n.id===selId)||null;
+  // Hand mode active if tool=hand OR space-held
+  const handMode=tool==="hand"||spaceDown;
+
+  // Smoothly animate zoom toward a screen point
+  const animRef=useRef(null);
+  function setZoomTo(nz,sx,sy,animate=true){
+    const z0=zoomRef.current,p0=panRef.current;
+    nz=Math.max(0.1,Math.min(4,nz));
+    const wx=(sx-p0.x)/z0,wy=(sy-p0.y)/z0;
+    const targetPan={x:sx-wx*nz,y:sy-wy*nz};
+    if(!animate){setZoom(nz);setPan(targetPan);return;}
+    if(animRef.current)cancelAnimationFrame(animRef.current);
+    const start=performance.now();
+    const dur=240;
+    const pStart=p0,zStart=z0;
+    const ease=t=>1-Math.pow(1-t,3);
+    function tick(now){
+      const t=Math.min(1,(now-start)/dur);const k=ease(t);
+      setZoom(zStart+(nz-zStart)*k);
+      setPan({x:pStart.x+(targetPan.x-pStart.x)*k,y:pStart.y+(targetPan.y-pStart.y)*k});
+      if(t<1)animRef.current=requestAnimationFrame(tick);else animRef.current=null;
+    }
+    animRef.current=requestAnimationFrame(tick);
+  }
+  function zoomAt(factor,sx,sy,animate=false){
+    setZoomTo(zoomRef.current*factor,sx,sy,animate);
+  }
+
+  function onCvMouseDown(e){
+    const target=e.target;
+    if(e.button===1||(e.button===0&&handMode)){
+      e.preventDefault();
+      panning.current=true;
+      setPanActive(true);
+      panStart.current={x:e.clientX-panRef.current.x,y:e.clientY-panRef.current.y};
+      return;
+    }
+    if(e.button===0&&target===cvRef.current){
+      setSelId(null);
+      if(panel&&panel.type==="detail")setPanel(null);
+    }
+  }
+  function onCvMouseMove(e){
+    if(panning.current&&panStart.current){
+      setPan({x:e.clientX-panStart.current.x,y:e.clientY-panStart.current.y});
+    }
+  }
+  function onCvMouseUp(){if(panning.current){panning.current=false;setPanActive(false);}}
+
+  function onWheel(e){
+    e.preventDefault();
+    // Ctrl/Cmd+wheel or trackpad pinch → zoom; plain wheel → pan
+    if(e.ctrlKey||e.metaKey){
+      const f=Math.exp(-e.deltaY*0.01);
+      zoomAt(f,e.clientX,e.clientY,false);
+    } else {
+      setPan(p=>({x:p.x-e.deltaX,y:p.y-e.deltaY}));
+    }
+  }
+
+  useEffect(()=>{
+    const el=cvRef.current;
+    if(el)el.addEventListener("wheel",onWheel,{passive:false});
+    return()=>{if(el)el.removeEventListener("wheel",onWheel)};
+  },[]);
+
+  // Keyboard: Space=hand, Cmd/Ctrl +/- zoom, Cmd/Ctrl 0 reset, Esc deselect, Delete remove
+  useEffect(()=>{
+    function isTypable(el){
+      if(!el)return false;
+      const t=el.tagName;
+      return t==="INPUT"||t==="TEXTAREA"||el.isContentEditable;
+    }
+    function onKD(e){
+      if(isTypable(document.activeElement))return;
+      if(e.code==="Space"&&!e.repeat){e.preventDefault();setSpaceDown(true);return;}
+      if((e.metaKey||e.ctrlKey)&&(e.key==="="||e.key==="+")){
+        e.preventDefault();
+        const cx=window.innerWidth/2,cy=window.innerHeight/2;
+        const next=Math.round((zoomRef.current+0.1)*10)/10;
+        setZoomTo(next,cx,cy,true);return;
+      }
+      if((e.metaKey||e.ctrlKey)&&e.key==="-"){
+        e.preventDefault();
+        const cx=window.innerWidth/2,cy=window.innerHeight/2;
+        const next=Math.round((zoomRef.current-0.1)*10)/10;
+        setZoomTo(next,cx,cy,true);return;
+      }
+      if((e.metaKey||e.ctrlKey)&&e.key==="0"){
+        e.preventDefault();
+        const cx=window.innerWidth/2,cy=window.innerHeight/2;
+        setZoomTo(1,cx,cy,true);return;
+      }
+      if(e.key==="Escape"){setSelId(null);setPanel(null);}
+      if((e.key==="Delete"||e.key==="Backspace")&&selId){
+        e.preventDefault();
+        setNodes(ns=>ns.filter(n=>n.id!==selId));
+        setSelId(null);setPanel(null);
+      }
+    }
+    function onKU(e){
+      if(e.code==="Space"){setSpaceDown(false);panning.current=false;setPanActive(false);}
+    }
+    function onWinUp(){if(panning.current){panning.current=false;setPanActive(false);}}
+    window.addEventListener("keydown",onKD);
+    window.addEventListener("keyup",onKU);
+    window.addEventListener("mouseup",onWinUp);
+    window.addEventListener("blur",onWinUp);
+    return()=>{window.removeEventListener("keydown",onKD);window.removeEventListener("keyup",onKU);window.removeEventListener("mouseup",onWinUp);window.removeEventListener("blur",onWinUp);};
+  },[selId]);
+
+  function addNode(params){
+    if(panel?.nodeId){
+      const existing=nodes.find(n=>n.id===panel.nodeId);
+      if(existing){
+        const id=existing.id;
+        setNodes(ns=>ns.map(n=>n.id===id?{...n,...params,status:"generating",progress:0,createdAt:Date.now()}:n));
+        setSelId(id);setPanel(null);
+        simulateGen(id);return;
+      }
+    }
+    const id="n"+(Date.now());
+    const[w,h]=window.frameSize(params.ar,params.resolution);
+    let nx,ny;
+    if(nodes.length===0){
+      const cx=window.innerWidth/2,cy=window.innerHeight/2;
+      nx=(cx-pan.x)/zoom-w/2;ny=(cy-pan.y)/zoom-h/2;
+    } else {
+      let maxR=-Infinity,refY=0;
+      for(const n of nodes){
+        const[nw]=window.frameSize(n.ar,n.resolution);
+        const r=n.x+nw;
+        if(r>maxR){maxR=r;refY=n.y;}
+      }
+      nx=maxR+100;ny=refY;
+    }
+    const newNode={id,x:nx,y:ny,status:"generating",progress:0,createdAt:Date.now(),...params};
+    setNodes(ns=>[...ns,newNode]);
+    setSelId(id);setPanel(null);
+    simulateGen(id);
+  }
+  function simulateGen(id){
+    let p=0;
+    const t=setInterval(()=>{
+      p+=Math.random()*15+5;
+      if(p>=100){clearInterval(t);setNodes(ns=>ns.map(n=>n.id===id?{...n,status:"done",progress:100}:n));}
+      else setNodes(ns=>ns.map(n=>n.id===id?{...n,progress:Math.round(p)}:n));
+    },400);
+  }
+
+  function onClickNode(id,wasSelected){
+    const n=nodes.find(x=>x.id===id);if(!n)return;
+    if(!wasSelected){setSelId(id);setPanel(null);return;}
+    if(n.status==="done")setPanel({type:"detail",nodeId:id});
+    else setPanel({type:"create",nodeId:id});
+  }
+  function onNodeAction(id,act){
+    const n=nodes.find(x=>x.id===id);if(!n)return;
+    if(act==="preview")setPreview(n);
+    else if(act==="download")alert("下载 "+(n.title||"video")+".mp4 (mock)");
+    else if(act==="info")setPanel({type:"detail",nodeId:id});
+    else if(act==="delete")deleteNode(id);
+  }
+
+  function deleteNode(id){setNodes(ns=>ns.filter(n=>n.id!==id));setSelId(null);setPanel(null);}
+  function moveNode(id,pos){setNodes(ns=>ns.map(n=>n.id===id?{...n,...pos}:n));}
+
+  const tools=[
+    {id:"cursor",tip:"选择",icon:<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M5 3l14 9-7 1.5-4 8z"/></svg>},
+    {id:"hand",tip:"平移",icon:<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M18 11V8a2 2 0 00-4 0v-1a2 2 0 00-4 0V6a2 2 0 00-4 0v8l-1.5-1.5a2 2 0 00-2.8 2.8L6 19a5 5 0 005 1h3a5 5 0 005-5v-4z"/></svg>},
+    {id:"sep"},
+    {id:"video",tip:"创建视频",icon:<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M15 10l4.6-2.3A1 1 0 0121 8.7v6.6a1 1 0 01-1.4.9L15 14M3 8a2 2 0 012-2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg>},
+  ];
+
+  function onToolClick(id){
+    if(id==="video"){setPanel({type:"create"});setTool("cursor");}
+    else setTool(id);
+  }
+
+  const cursor=handMode?(panActive?"grabbing":"grab"):"default";
+  useEffect(()=>{document.body.style.cursor=handMode?(panActive?"grabbing":"grab"):"";return()=>{document.body.style.cursor="";};},[handMode,panActive]);
+
+  return(
+    <div style={{width:"100vw",height:"100vh",position:"relative",overflow:"hidden",cursor}}>
+      {/* Canvas BG — multi-layer dot grid scaling with zoom */}
+      <DotGrid pan={pan} zoom={zoom}/>
+
+      {/* Canvas interaction layer */}
+      <div ref={cvRef} style={{position:"absolute",inset:0}} onMouseDown={onCvMouseDown} onMouseMove={onCvMouseMove} onMouseUp={onCvMouseUp}>
+        {/* World layer (transforms with pan + zoom) */}
+        <div style={{position:"absolute",top:0,left:0,transform:`translate(${pan.x}px,${pan.y}px) scale(${zoom})`,transformOrigin:"0 0",pointerEvents:"none"}}>
+          <div style={{pointerEvents:"auto"}}>
+          {nodes.map(n=>(
+            <VNode key={n.id} node={n} sel={selId===n.id} zoom={zoom}
+              onClickNode={onClickNode}
+              onMove={moveNode}
+              onAction={(act)=>onNodeAction(n.id,act)}
+            />
+          ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Top bar */}
+      <div className="topbar">
+        <div className="tb-left">
+          <div style={{width:28,height:28,background:"#111",borderRadius:7,display:"flex",alignItems:"center",justifyContent:"center"}}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="white"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+          </div>
+          <div className="tb-title">未命名画布 <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{opacity:.4}}><path d="M6 9l6 6 6-6"/></svg></div>
+        </div>
+        <div className="tb-right"></div>
+      </div>
+
+      {/* Bottom toolbar */}
+      <div className="toolbar">
+        {tools.map((t,i)=>t.id==="sep"
+          ?<div key={i} className="t-sep"/>
+          :<button key={t.id} className={"tool-btn"+(tool===t.id?" on":"")} onClick={()=>onToolClick(t.id)}>
+            {t.icon}
+            <span className="t-tip">{t.tip}</span>
+          </button>
+        )}
+      </div>
+
+      {/* Zoom bar */}
+      <div className="zoom-bar">
+        <button className="zb-btn" onClick={()=>{const cx=window.innerWidth/2,cy=window.innerHeight/2;setZoomTo(Math.round((zoomRef.current-0.1)*10)/10,cx,cy,true);}}>−</button>
+        <div className="zb-val">{Math.round(zoom*100)}%</div>
+        <button className="zb-btn" onClick={()=>{const cx=window.innerWidth/2,cy=window.innerHeight/2;setZoomTo(Math.round((zoomRef.current+0.1)*10)/10,cx,cy,true);}}>+</button>
+      </div>
+
+      {handMode&&<Minimap nodes={nodes} selId={selId} pan={pan} zoom={zoom} onPan={setPan}/>}
+
+      <div className="fab-group">
+        <button className={"fab"+(panel?.type==="agent"?" active":"")} title="对话" onClick={()=>setPanel(panel?.type==="agent"?null:{type:"agent"})}>
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor"><path d="M4 4h16a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H8l-4 4z"/></svg>
+        </button>
+        <button className={"fab"+(panel?.type==="assets"?" active":"")} title="资产库" onClick={()=>setPanel(panel?.type==="assets"?null:{type:"assets"})}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+        </button>
+      </div>
+
+      {/* Empty state */}
+      {nodes.length===0&&(
+        <div className="empty">
+          <h3>画布是空的</h3>
+          <p>点击工具栏的 <b>视频</b> 按钮开始创作</p>
+        </div>
+      )}
+
+      {/* Panels */}
+      {panel?.type==="create"&&(
+        <CreatePanel
+          node={nodes.find(n=>n.id===panel.nodeId)}
+          onClose={()=>setPanel(null)}
+          onGenerate={addNode}
+        />
+      )}
+      {panel?.type==="detail"&&(()=>{const n=nodes.find(x=>x.id===panel.nodeId);return n&&(
+        <DetailPanel
+          node={n}
+          onClose={()=>setPanel(null)}
+          onPreview={()=>setPreview(n)}
+          onDownload={()=>alert("下载 "+(n.title||"video")+".mp4 (mock)")}
+          onDelete={()=>deleteNode(n.id)}
+          onRegen={()=>setPanel({type:"create",nodeId:n.id})}
+        />
+      );})()}
+      {panel?.type==="agent"&&<AgentPanel onClose={()=>setPanel(null)} nodes={nodes}/>}
+      {panel?.type==="assets"&&<AssetsPanel onClose={()=>setPanel(null)} nodes={nodes}/>}
+      {preview&&<PreviewModal node={preview} onClose={()=>setPreview(null)}/>}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
