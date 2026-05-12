@@ -124,6 +124,31 @@ const RESS = ["480p", "720p", "1080p"];
 const BACKEND_CONFIG_KEY = "sd2video:backend-config";
 const BACKEND_MODES = new Set(["mock", "dev", "real"]);
 const CREATE_PATH = "/api/v1/tasks";
+const MEDIA_KIND_LABELS = { image: "图片", video: "视频", audio: "音频" };
+const MEDIA_REFERENCE_RE = /@(图片|视频|音频)\d+/g;
+const CAMERA_PRESETS = [
+  { id: "dolly_in", label: "推近", text: "Dolly in shot, camera slowly pushes toward the subject." },
+  { id: "dolly_out", label: "拉远", text: "Dolly out shot, camera slowly pulls away to reveal the scene." },
+  { id: "orbit", label: "环绕", text: "Orbit shot, the camera circles around the subject smoothly." },
+  { id: "pan_left", label: "左摇", text: "Pan left, the camera slowly pans across the scene." },
+  { id: "pan_right", label: "右摇", text: "Pan right, the camera slowly pans across the scene." },
+  { id: "tracking", label: "跟拍", text: "Tracking shot, the camera follows the subject's movement." },
+  { id: "dive", label: "俯冲", text: "First-person dive shot, the camera dives forward with momentum." },
+  { id: "static", label: "固定", text: "Static shot, locked-off camera with stable framing." },
+  { id: "close_up", label: "特写", text: "Close-up shot, emphasizing facial details and subtle motion." },
+  { id: "macro", label: "微距", text: "Macro shot, focusing on tiny details with shallow depth of field." },
+  { id: "wide", label: "远景", text: "Wide shot, revealing the full environment and spatial context." },
+  { id: "low_angle", label: "低角度", text: "Low-angle shot, making the subject feel larger and more dramatic." }
+];
+
+function defaultLocalApiBase() {
+  if (typeof window === "undefined") return "";
+  const host = window.location.hostname;
+  if ((host === "127.0.0.1" || host === "localhost" || host === "::1") && window.location.port === "5173") {
+    return "http://127.0.0.1:8787";
+  }
+  return "";
+}
 
 function readBackendConfig() {
   let saved = {};
@@ -131,7 +156,7 @@ function readBackendConfig() {
   const inline = window.SD2VIDEO_BACKEND || {};
   const metaBase = document.querySelector('meta[name="sd2video-api-base"]')?.content || "";
   const mode = inline.mode || saved.mode || "dev";
-  const apiBase = window.__SD2VIDEO_API_BASE__ || inline.apiBase || metaBase || saved.apiBase || "";
+  const apiBase = window.__SD2VIDEO_API_BASE__ || inline.apiBase || metaBase || saved.apiBase || defaultLocalApiBase();
   const createPath = inline.createPath || saved.createPath || CREATE_PATH;
   return {
     mode: BACKEND_MODES.has(mode) ? mode : "mock",
@@ -142,6 +167,95 @@ function readBackendConfig() {
 
 function createEndpoint(config) {
   return `${config.apiBase || ""}${config.createPath || CREATE_PATH}`;
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function clampNumber(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function mediaKindLabel(kind) {
+  return MEDIA_KIND_LABELS[kind] || "素材";
+}
+
+function mediaLabel(item, kind, index) {
+  return item?.label || `${mediaKindLabel(kind)}${index + 1}`;
+}
+
+function nextMediaLabel(list, kind) {
+  const prefix = mediaKindLabel(kind);
+  let max = 0;
+  for (let i = 0; i < (list || []).length; i += 1) {
+    const label = mediaLabel(list[i], kind, i);
+    const match = new RegExp(`^${escapeRegExp(prefix)}(\\d+)$`).exec(label);
+    if (match) max = Math.max(max, Number(match[1]));
+  }
+  return `${prefix}${max + 1}`;
+}
+
+function createMediaItem(file, kind, label) {
+  return {
+    id: `${kind}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`,
+    url: URL.createObjectURL(file),
+    name: file.name,
+    kind,
+    label
+  };
+}
+
+function normalizeMediaItem(item, kind, index) {
+  if (typeof item === "string") {
+    return { id: `${kind}-${index + 1}`, url: item, kind, label: `${mediaKindLabel(kind)}${index + 1}` };
+  }
+  return {
+    ...item,
+    id: item?.id || `${kind}-${index + 1}-${String(item?.url || item?.name || index)}`,
+    kind: item?.kind || kind,
+    label: item?.label || `${mediaKindLabel(kind)}${index + 1}`
+  };
+}
+
+function normalizeMediaList(items, kind) {
+  return (items || []).map((item, index) => normalizeMediaItem(item, kind, index));
+}
+
+function mediaReferenceToken(item, kind, index) {
+  return `@${mediaLabel(item, kind, index)}`;
+}
+
+function extractPromptReferenceTokens(text) {
+  return Array.from(new Set(String(text || "").match(MEDIA_REFERENCE_RE) || []));
+}
+
+function removePromptToken(prompt, token) {
+  const re = new RegExp(`(^|\\s)${escapeRegExp(token)}(?=\\s|$|[，。,.!?！？；;])`, "g");
+  return String(prompt || "")
+    .replace(re, (match, lead) => lead ? lead : "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+function hasPromptFragment(prompt, fragment) {
+  return String(prompt || "").includes(fragment);
+}
+
+function appendPromptFragment(prompt, fragment) {
+  const current = String(prompt || "").trim();
+  if (!current) return fragment;
+  if (hasPromptFragment(current, fragment)) return current;
+  return `${current}\n${fragment}`;
+}
+
+function removePromptFragment(prompt, fragment) {
+  return String(prompt || "")
+    .replace(new RegExp(`\\s*${escapeRegExp(fragment)}\\s*`, "g"), "\n")
+    .split("\n")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join("\n");
 }
 
 function mediaUrlOf(item) {
@@ -523,18 +637,19 @@ function Toggle({ on, onChange }) {
 
 }
 
-function MediaPicker({ label, accept, kind, items, onChange, max = 1 }) {
+function MediaPicker({ label, accept, kind, items, onChange, max = 1, onInsertReference, onRemoveReference }) {
   const ref = React.useRef();
-  const list = items || [];
+  const list = normalizeMediaList(items || [], kind);
   function add(files) {
     const next = [...list];
     for (const f of Array.from(files || [])) {
       if (next.length >= max) break;
-      next.push({ url: URL.createObjectURL(f), name: f.name, kind });
+      next.push(createMediaItem(f, kind, nextMediaLabel(next, kind)));
     }
     onChange(next);
   }
   function remove(i) {
+    onRemoveReference?.(mediaReferenceToken(list[i], kind, i));
     onChange(list.filter((_, idx) => idx !== i));
   }
   return (
@@ -544,17 +659,20 @@ function MediaPicker({ label, accept, kind, items, onChange, max = 1 }) {
         <span style={{ fontSize: 10, color: "#bbb", fontVariantNumeric: "tabular-nums" }}>{list.length}/{max}</span>
       </div>
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-        {list.map((it, i) =>
-        <div key={it.url + i} className="asset-chip">
+        {list.map((it, i) => {
+          const refToken = mediaReferenceToken(it, kind, i);
+          return (
+        <div key={it.id || it.url + i} className="asset-chip" title={`插入 ${refToken}`} onClick={() => onInsertReference?.(refToken)}>
           {kind === "image" && <img src={it.url} />}
           {kind === "video" && <video src={it.url} muted />}
           {kind === "audio" && <div className="audio-chip">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3v10.5A4 4 0 1 1 10 10V5h10v3H12z" /></svg>
           </div>}
-          <span>{kind === "image" ? "图片" : kind === "video" ? "视频" : "音频"}{i + 1}</span>
-          <button onClick={(e) => {e.stopPropagation();remove(i);}}>×</button>
+          <span>{mediaLabel(it, kind, i)}</span>
+          <button title="删除素材" onClick={(e) => {e.stopPropagation();remove(i);}}>×</button>
         </div>
-        )}
+          );
+        })}
         {list.length < max &&
         <button className="add-asset" onClick={() => ref.current?.click()}>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 5v14M5 12h14" /></svg>
@@ -568,13 +686,19 @@ function MediaPicker({ label, accept, kind, items, onChange, max = 1 }) {
 }
 
 const PANEL_POS_KEY = "sd2video:create-panel-position";
+const PANEL_WIDTH_KEY = "sd2video:create-panel-width";
+const PROMPT_HEIGHT_KEY = "sd2video:prompt-height";
+const PANEL_DEFAULT_WIDTH = 310;
+const PANEL_MAX_WIDTH = PANEL_DEFAULT_WIDTH * 2;
+const PANEL_DEFAULT_PROMPT_HEIGHT = 78;
+const PANEL_MAX_PROMPT_HEIGHT = 280;
 function defaultPanelPos() {
   return {
     x: typeof window === "undefined" ? 16 : Math.max(16, window.innerWidth - 326),
     y: 56
   };
 }
-function clampPanelPos(pos, w = 310, h = 520) {
+function clampPanelPos(pos, w = PANEL_DEFAULT_WIDTH, h = 520) {
   if (typeof window === "undefined") return pos;
   return {
     x: Math.max(8, Math.min(window.innerWidth - w - 8, pos.x)),
@@ -593,6 +717,30 @@ function savePanelPos(pos) {
   if (typeof window === "undefined") return;
   try { window.localStorage.setItem(PANEL_POS_KEY, JSON.stringify(pos)); } catch (_) {}
 }
+function readPanelWidth() {
+  if (typeof window === "undefined") return PANEL_DEFAULT_WIDTH;
+  try {
+    const saved = Number(window.localStorage.getItem(PANEL_WIDTH_KEY));
+    if (Number.isFinite(saved)) return clampNumber(saved, PANEL_DEFAULT_WIDTH, PANEL_MAX_WIDTH);
+  } catch (_) {}
+  return PANEL_DEFAULT_WIDTH;
+}
+function savePanelWidth(width) {
+  if (typeof window === "undefined") return;
+  try { window.localStorage.setItem(PANEL_WIDTH_KEY, String(width)); } catch (_) {}
+}
+function readPromptHeight() {
+  if (typeof window === "undefined") return PANEL_DEFAULT_PROMPT_HEIGHT;
+  try {
+    const saved = Number(window.localStorage.getItem(PROMPT_HEIGHT_KEY));
+    if (Number.isFinite(saved)) return clampNumber(saved, PANEL_DEFAULT_PROMPT_HEIGHT, PANEL_MAX_PROMPT_HEIGHT);
+  } catch (_) {}
+  return PANEL_DEFAULT_PROMPT_HEIGHT;
+}
+function savePromptHeight(height) {
+  if (typeof window === "undefined") return;
+  try { window.localStorage.setItem(PROMPT_HEIGHT_KEY, String(height)); } catch (_) {}
+}
 
 // ── CreatePanel ──────────────────────────────────────────────────────
 function CreatePanel({ node, onClose, onGenerate, backendConfig }) {
@@ -607,10 +755,10 @@ function CreatePanel({ node, onClose, onGenerate, backendConfig }) {
   const [dur, setDur] = us(node?.duration || 5);
   const [startImg, setStart] = us(node?.startImg || null);
   const [endImg, setEnd] = us(node?.endImg || null);
-  const [refImages, setRefImages] = us(node?.refImages || []);
-  const [refVideos, setRefVideos] = us(node?.refVideos || (node?.refVideo ? [{ url: node.refVideo, kind: "video" }] : []));
-  const [refAudios, setRefAudios] = us(node?.refAudios || []);
-  const [editVideo, setEditVideo] = us(node?.editVideo || []);
+  const [refImages, setRefImages] = us(() => normalizeMediaList(node?.refImages || [], "image"));
+  const [refVideos, setRefVideos] = us(() => normalizeMediaList(node?.refVideos || (node?.refVideo ? [{ url: node.refVideo, kind: "video" }] : []), "video"));
+  const [refAudios, setRefAudios] = us(() => normalizeMediaList(node?.refAudios || [], "audio"));
+  const [editVideo, setEditVideo] = us(() => normalizeMediaList(node?.editVideo || [], "video"));
   const [seed, setSeed] = us(node?.seed || "");
   const [watermark, setWM] = us(node?.watermark || false);
   const [fixedCam, setFixedCam] = us(node?.fixedCam || node?.camera_fixed || false);
@@ -619,8 +767,14 @@ function CreatePanel({ node, onClose, onGenerate, backendConfig }) {
   const [webSearch, setWebSearch] = us(!!node?.webSearch || !!node?.tools?.some((t) => t.type === "web_search"));
   const [submitting, setSubmitting] = us(false);
   const [submitError, setSubmitError] = us("");
+  const [referenceNotice, setReferenceNotice] = us("");
   const sRef = ur(),eRef = ur(),dragRef = ur(null);
+  const promptRef = ur(null);
+  const promptSelectionRef = ur({ start: null, end: null });
   const [panelPos, setPanelPos] = us(readPanelPos);
+  const [panelWidth, setPanelWidth] = us(readPanelWidth);
+  const [promptHeight, setPromptHeight] = us(readPromptHeight);
+  const [isNarrow, setIsNarrow] = us(() => typeof window !== "undefined" && window.innerWidth < 680);
 
   const selectedModel = MODELS.find((m) => m.id === model) || MODELS[0];
   const isFast = selectedModel.maxResolution === "720p";
@@ -629,6 +783,26 @@ function CreatePanel({ node, onClose, onGenerate, backendConfig }) {
 
   const hasPrompt = !!prompt.trim();
   const hasVisualRef = refImages.length > 0 || refVideos.length > 0;
+  const activeImages = mode === "reference" || mode === "edit" ? refImages : [];
+  const activeVideos = mode === "reference" || mode === "extend" ? refVideos : [];
+  const activeAudios = mode === "reference" || mode === "edit" ? refAudios : [];
+  const activeEditVideos = mode === "edit" ? editVideo : [];
+  const referenceBindings = [
+    ...activeImages.map((item, index) => ({ token: mediaReferenceToken(item, "image", index), kind: "image", id: item.id, name: item.name || mediaLabel(item, "image", index), url: item.url })),
+    ...activeVideos.map((item, index) => ({ token: mediaReferenceToken(item, "video", index), kind: "video", id: item.id, name: item.name || mediaLabel(item, "video", index), url: item.url })),
+    ...activeAudios.map((item, index) => ({ token: mediaReferenceToken(item, "audio", index), kind: "audio", id: item.id, name: item.name || mediaLabel(item, "audio", index), url: item.url })),
+    ...activeEditVideos.map((item, index) => ({ token: mediaReferenceToken(item, "video", index), kind: "video", id: item.id, name: item.name || mediaLabel(item, "video", index), url: item.url }))
+  ];
+  const validReferenceTokens = referenceBindings.map((binding) => binding.token);
+  const promptReferences = extractPromptReferenceTokens(prompt).map((token) => ({
+    token,
+    valid: validReferenceTokens.includes(token),
+    binding: referenceBindings.find((item) => item.token === token) || null
+  }));
+  const invalidReferenceTokens = extractPromptReferenceTokens(prompt).filter((token) => !validReferenceTokens.includes(token));
+  const referenceError = invalidReferenceTokens.length ?
+    `提示词中的 ${invalidReferenceTokens.join("、")} 已失效，请删除或重新插入。` :
+    "";
   const panelParams = {
     mode, model, prompt, neg, ar, ratio: ar, resolution: res, duration: dur,
     startImg, endImg, refImages, refVideos, refAudios, editVideo,
@@ -636,10 +810,12 @@ function CreatePanel({ node, onClose, onGenerate, backendConfig }) {
     generateAudio, generate_audio: generateAudio,
     returnLastFrame, return_last_frame: returnLastFrame,
     webSearch,
+    promptReferences,
+    referenceBindings,
     modelLabel: selectedModel.label
   };
   const validationErrors = validateCreateTaskParams(panelParams, backendConfig || readBackendConfig());
-  const firstError = validationErrors[0];
+  const firstError = referenceError ? { field: "promptReferences", message: referenceError } : validationErrors[0];
   const ok =
     mode === "t2v" ? hasPrompt :
     mode === "first_frame" ? !!startImg :
@@ -666,11 +842,101 @@ function CreatePanel({ node, onClose, onGenerate, backendConfig }) {
     }
   }
 
+  ue(() => {
+    function onResize() {
+      const narrow = window.innerWidth < 680;
+      setIsNarrow(narrow);
+      if (!narrow) setPanelPos((pos) => clampPanelPos(pos, panelWidth, dragRef.current?.offsetHeight || 520));
+    }
+    onResize();
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [panelWidth]);
+
+  function rememberPromptSelection(e) {
+    promptSelectionRef.current = { start: e.currentTarget.selectionStart, end: e.currentTarget.selectionEnd };
+  }
+
+  function insertReferenceToken(token) {
+    setReferenceNotice("");
+    let nextCursor = null;
+    setPrompt((prev) => {
+      if (extractPromptReferenceTokens(prev).includes(token)) return prev;
+      const selection = promptSelectionRef.current || {};
+      const start = Number.isFinite(selection.start) ? clampNumber(selection.start, 0, prev.length) : prev.length;
+      const end = Number.isFinite(selection.end) ? clampNumber(selection.end, start, prev.length) : start;
+      const before = prev.slice(0, start);
+      const after = prev.slice(end);
+      const lead = before && !/\s$/.test(before) ? " " : "";
+      const tail = after && !/^\s/.test(after) ? " " : "";
+      nextCursor = before.length + lead.length + token.length + tail.length;
+      return `${before}${lead}${token}${tail}${after}`;
+    });
+    window.setTimeout(() => {
+      promptRef.current?.focus();
+      if (nextCursor != null) promptRef.current?.setSelectionRange(nextCursor, nextCursor);
+    }, 0);
+  }
+
+  function removeReferenceToken(token) {
+    if (prompt.includes(token)) {
+      setPrompt((prev) => removePromptToken(prev, token));
+      setReferenceNotice(`${token} 对应素材已删除，已从提示词移除。`);
+    }
+  }
+
+  function toggleCameraPreset(preset) {
+    setSubmitError("");
+    setPrompt((prev) => hasPromptFragment(prev, preset.text) ? removePromptFragment(prev, preset.text) : appendPromptFragment(prev, preset.text));
+  }
+
+  function updatePromptHeight(e) {
+    const height = clampNumber(e.currentTarget.offsetHeight || PANEL_DEFAULT_PROMPT_HEIGHT, PANEL_DEFAULT_PROMPT_HEIGHT, PANEL_MAX_PROMPT_HEIGHT);
+    setPromptHeight(height);
+    savePromptHeight(height);
+  }
+
+  function resetPanelLayout() {
+    const nextWidth = PANEL_DEFAULT_WIDTH;
+    const nextPos = clampPanelPos(defaultPanelPos(), nextWidth, dragRef.current?.offsetHeight || 520);
+    setPanelWidth(nextWidth);
+    setPromptHeight(PANEL_DEFAULT_PROMPT_HEIGHT);
+    setPanelPos(nextPos);
+    savePanelWidth(nextWidth);
+    savePromptHeight(PANEL_DEFAULT_PROMPT_HEIGHT);
+    savePanelPos(nextPos);
+  }
+
+  function startPanelResize(e) {
+    if (isNarrow || e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const panel = dragRef.current;
+    const ow = panel?.offsetWidth || panelWidth;
+    const right = panelPos.x + ow;
+    const maxWidth = Math.min(PANEL_MAX_WIDTH, right - 8);
+    const sx = e.clientX;
+    function mv(ev) {
+      const nextWidth = clampNumber(ow - (ev.clientX - sx), PANEL_DEFAULT_WIDTH, maxWidth);
+      const nextPos = { ...panelPos, x: right - nextWidth };
+      setPanelWidth(nextWidth);
+      setPanelPos(nextPos);
+      savePanelWidth(nextWidth);
+      savePanelPos(nextPos);
+    }
+    function up() {
+      window.removeEventListener("mousemove", mv);
+      window.removeEventListener("mouseup", up);
+    }
+    window.addEventListener("mousemove", mv);
+    window.addEventListener("mouseup", up);
+  }
+
   function startDrag(e) {
     if (e.button !== 0 || e.target.closest("button")) return;
     e.preventDefault();
     const panel = dragRef.current;
-    const w = panel?.offsetWidth || 310;
+    const w = panel?.offsetWidth || PANEL_DEFAULT_WIDTH;
     const h = panel?.offsetHeight || 520;
     const sx = e.clientX,sy = e.clientY,ox = panelPos.x,oy = panelPos.y;
     function mv(ev) {
@@ -687,12 +953,18 @@ function CreatePanel({ node, onClose, onGenerate, backendConfig }) {
   }
 
   return (
-    <div ref={dragRef} className="panel" style={{ left: panelPos.x, top: panelPos.y, right: "auto" }}>
+    <div ref={dragRef} className="panel" style={isNarrow ? { left: 8, top: 56, right: "auto", width: "calc(100vw - 16px)" } : { left: panelPos.x, top: panelPos.y, right: "auto", width: panelWidth }}>
+      {!isNarrow && <div className="panel-resize" title="拖拽调整面板宽度" onMouseDown={startPanelResize} onDoubleClick={resetPanelLayout} />}
       <div className="ph ph-drag" onMouseDown={startDrag}>
         <div><div className="pt">生成视频</div><div className="ps">Seedance · 火山方舟</div></div>
-        <button className="pc" onMouseDown={(e) => e.stopPropagation()} onClick={onClose}>
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 6L6 18M6 6l12 12" /></svg>
-        </button>
+        <div className="ph-actions">
+          <button className="pc" title="重置尺寸" onMouseDown={(e) => e.stopPropagation()} onClick={resetPanelLayout}>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 12a9 9 0 1 1 3 6.7" /><path d="M3 21v-6h6" /></svg>
+          </button>
+          <button className="pc" title="关闭" onMouseDown={(e) => e.stopPropagation()} onClick={onClose}>
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 6L6 18M6 6l12 12" /></svg>
+          </button>
+        </div>
       </div>
       <div className="pb">
         {/* mode */}
@@ -732,27 +1004,55 @@ function CreatePanel({ node, onClose, onGenerate, backendConfig }) {
         {mode === "reference" &&
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           <div className="fl">参考素材</div>
-          <MediaPicker label="参考图" accept="image/*" kind="image" items={refImages} onChange={setRefImages} max={9} />
-          <MediaPicker label="参考视频" accept="video/*" kind="video" items={refVideos} onChange={setRefVideos} max={3} />
-          <MediaPicker label="参考音频" accept="audio/*" kind="audio" items={refAudios} onChange={setRefAudios} max={3} />
+          <MediaPicker label="参考图" accept="image/*" kind="image" items={refImages} onChange={setRefImages} max={9} onInsertReference={insertReferenceToken} onRemoveReference={removeReferenceToken} />
+          <MediaPicker label="参考视频" accept="video/*" kind="video" items={refVideos} onChange={setRefVideos} max={3} onInsertReference={insertReferenceToken} onRemoveReference={removeReferenceToken} />
+          <MediaPicker label="参考音频" accept="audio/*" kind="audio" items={refAudios} onChange={setRefAudios} max={3} onInsertReference={insertReferenceToken} onRemoveReference={removeReferenceToken} />
         </div>}
         {mode === "edit" &&
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           <div className="fl">编辑素材</div>
-          <MediaPicker label="待编辑视频" accept="video/*" kind="video" items={editVideo} onChange={setEditVideo} max={1} />
-          <MediaPicker label="参考图" accept="image/*" kind="image" items={refImages} onChange={setRefImages} max={9} />
-          <MediaPicker label="参考音频" accept="audio/*" kind="audio" items={refAudios} onChange={setRefAudios} max={3} />
+          <MediaPicker label="待编辑视频" accept="video/*" kind="video" items={editVideo} onChange={setEditVideo} max={1} onInsertReference={insertReferenceToken} onRemoveReference={removeReferenceToken} />
+          <MediaPicker label="参考图" accept="image/*" kind="image" items={refImages} onChange={setRefImages} max={9} onInsertReference={insertReferenceToken} onRemoveReference={removeReferenceToken} />
+          <MediaPicker label="参考音频" accept="audio/*" kind="audio" items={refAudios} onChange={setRefAudios} max={3} onInsertReference={insertReferenceToken} onRemoveReference={removeReferenceToken} />
         </div>}
         {mode === "extend" &&
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           <div className="fl">延长素材</div>
-          <MediaPicker label="视频片段" accept="video/*" kind="video" items={refVideos} onChange={setRefVideos} max={3} />
+          <MediaPicker label="视频片段" accept="video/*" kind="video" items={refVideos} onChange={setRefVideos} max={3} onInsertReference={insertReferenceToken} onRemoveReference={removeReferenceToken} />
         </div>}
+
+        {/* camera prompts */}
+        <div>
+          <div className="fl">镜头控制</div>
+          <div className="camera-grid">
+            {CAMERA_PRESETS.map((preset) => {
+              const selected = hasPromptFragment(prompt, preset.text);
+              return (
+                <button key={preset.id} type="button" title={preset.text} className={"cam-chip" + (selected ? " on" : "")} onClick={() => toggleCameraPreset(preset)}>
+                  {preset.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
 
         {/* prompt */}
         <div>
           <div className="fl">提示词</div>
-          <textarea className="ta" value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="描述你想生成的视频内容…" />
+          <textarea
+            ref={promptRef}
+            className="ta"
+            value={prompt}
+            onChange={(e) => {setPrompt(e.target.value);rememberPromptSelection(e);}}
+            onSelect={rememberPromptSelection}
+            onKeyUp={rememberPromptSelection}
+            onClick={rememberPromptSelection}
+            onMouseUp={updatePromptHeight}
+            onBlur={updatePromptHeight}
+            placeholder="描述你想生成的视频内容…"
+            style={{ height: promptHeight }}
+          />
+          {referenceNotice && <div style={{ fontSize: 10.5, color: "#777", lineHeight: 1.45, marginTop: 5 }}>{referenceNotice}</div>}
           <div onClick={() => setShowNeg((v) => !v)} style={{ fontSize: 11, color: "#bbb", cursor: "pointer", marginTop: 5, display: "flex", alignItems: "center", gap: 3 }}>
             <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d={showNeg ? "M18 15l-6-6-6 6" : "M6 9l6 6 6-6"} /></svg>
             {showNeg ? "收起" : "添加负向提示词"}
@@ -856,10 +1156,10 @@ function DetailPanel({ node, onClose, onPreview, onDownload, onRegen, onCancel, 
   const refs = [];
   if (node.startImg) refs.push({ src: node.startImg, label: "首帧", kind: "image" });
   if (node.endImg) refs.push({ src: node.endImg, label: "尾帧", kind: "image" });
-  if (node.editVideo) node.editVideo.forEach((r, i) => refs.push({ src: r.url, label: "编辑视频" + (i + 1), kind: "video" }));
-  if (node.refImages) node.refImages.forEach((r, i) => refs.push({ src: r.url, label: "图片" + (i + 1), kind: "image" }));
-  if (node.refVideos) node.refVideos.forEach((r, i) => refs.push({ src: r.url, label: "视频" + (i + 1), kind: "video" }));
-  if (node.refAudios) node.refAudios.forEach((r, i) => refs.push({ src: r.url, label: "音频" + (i + 1), kind: "audio" }));
+  if (node.editVideo) node.editVideo.forEach((r, i) => refs.push({ src: r.url, label: r.label || "视频" + (i + 1), kind: "video" }));
+  if (node.refImages) node.refImages.forEach((r, i) => refs.push({ src: r.url, label: r.label || "图片" + (i + 1), kind: "image" }));
+  if (node.refVideos) node.refVideos.forEach((r, i) => refs.push({ src: r.url, label: r.label || "视频" + (i + 1), kind: "video" }));
+  if (node.refAudios) node.refAudios.forEach((r, i) => refs.push({ src: r.url, label: r.label || "音频" + (i + 1), kind: "audio" }));
   const videoUrl = node.video_url || node.videoUrl;
   const errorMessage = node.error_message || node.errorMessage;
   const taskStatus = node.task_status || node.taskStatus || node.status;

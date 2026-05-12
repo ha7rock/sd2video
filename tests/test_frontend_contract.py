@@ -43,6 +43,43 @@ class FrontendSafetyContractTests(unittest.TestCase):
                 self.assertIn('if(n.status==="generating"){', source)
                 self.assertIn("请先取消任务，取消成功后再删除记录。", source)
 
+    def test_prompt_resource_tokens_are_validated_before_submit(self) -> None:
+        for name in ("app-components.jsx", "canvas.standalone.html"):
+            with self.subTest(name=name):
+                source = self._read(name)
+                self.assertIn("MEDIA_REFERENCE_RE", source)
+                self.assertIn("mediaReferenceToken", source)
+                self.assertIn("onInsertReference={insertReferenceToken}", source)
+                self.assertIn("onRemoveReference={removeReferenceToken}", source)
+                self.assertIn("promptReferences", source)
+                self.assertIn("已失效，请删除或重新插入", source)
+
+    def test_camera_controls_are_prompt_augmentation_only(self) -> None:
+        for name in ("app-components.jsx", "canvas.standalone.html"):
+            with self.subTest(name=name):
+                source = self._read(name)
+                self.assertGreaterEqual(source.count('id: "'), 12)
+                self.assertIn("CAMERA_PRESETS", source)
+                self.assertIn("toggleCameraPreset", source)
+                self.assertIn("appendPromptFragment", source)
+                self.assertIn("camera_fixed: fixedCam", source)
+
+    def test_panel_and_prompt_size_controls_are_persisted(self) -> None:
+        for name in ("app-components.jsx", "canvas.standalone.html"):
+            with self.subTest(name=name):
+                source = self._read(name)
+                self.assertIn('PANEL_WIDTH_KEY = "sd2video:create-panel-width"', source)
+                self.assertIn('PROMPT_HEIGHT_KEY = "sd2video:prompt-height"', source)
+                self.assertIn("startPanelResize", source)
+                self.assertIn("resetPanelLayout", source)
+
+        for name in ("canvas.html", "canvas.standalone.html"):
+            with self.subTest(name=name):
+                source = self._read(name)
+                self.assertIn(".panel-resize", source)
+                self.assertIn("resize:vertical", source)
+                self.assertIn(".camera-grid", source)
+
 
 if __name__ == "__main__":
     unittest.main()
