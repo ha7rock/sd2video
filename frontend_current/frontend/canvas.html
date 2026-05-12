@@ -285,9 +285,12 @@ function App(){
   const panning=useRef(false);
   const panStart=useRef(null);
   const cvRef=useRef();
+  const timersRef=useRef({});
+  const submitGuardRef=useRef({busy:false,last:null});
   const zoomRef=useRef(zoom);const panRef=useRef(pan);
   useEffect(()=>{zoomRef.current=zoom;},[zoom]);
   useEffect(()=>{panRef.current=pan;},[pan]);
+  useEffect(()=>()=>{Object.values(timersRef.current).forEach(clearInterval);},[]);
 
   const selNode=nodes.find(n=>n.id===selId)||null;
   // Hand mode active if tool=hand OR space-held
@@ -386,8 +389,7 @@ function App(){
       if(e.key==="Escape"){setSelId(null);setPanel(null);}
       if((e.key==="Delete"||e.key==="Backspace")&&selId){
         e.preventDefault();
-        setNodes(ns=>ns.filter(n=>n.id!==selId));
-        setSelId(null);setPanel(null);
+        deleteNode(selId);
       }
     }
     function onKU(e){
@@ -401,14 +403,61 @@ function App(){
     return()=>{window.removeEventListener("keydown",onKD);window.removeEventListener("keyup",onKU);window.removeEventListener("mouseup",onWinUp);window.removeEventListener("blur",onWinUp);};
   },[selId]);
 
-  function addNode(params){
+  function submitSignature(params){
+    const pick={
+      mode:params.mode,model:params.model,prompt:params.prompt,neg:params.neg||params.negPrompt,
+      ar:params.ar||params.ratio,resolution:params.resolution,duration:params.duration,
+      startImg:params.startImg||null,endImg:params.endImg||null,
+      refImages:(params.refImages||[]).map(x=>x.url||x.name||x.kind),
+      refVideos:(params.refVideos||[]).map(x=>x.url||x.name||x.kind),
+      refAudios:(params.refAudios||[]).map(x=>x.url||x.name||x.kind),
+      editVideo:(params.editVideo||[]).map(x=>x.url||x.name||x.kind),
+      seed:params.seed||null,watermark:!!params.watermark,
+      camera_fixed:!!(params.camera_fixed||params.fixedCam),
+      generate_audio:!!(params.generate_audio||params.generateAudio),
+      return_last_frame:!!(params.return_last_frame||params.returnLastFrame),
+      tools:params.tools||[]
+    };
+    return JSON.stringify(pick);
+  }
+  function submitWarnings(params, signature){
+    const warnings=[];
+    if(params.resolution==="1080p")warnings.push("1080p 分辨率会显著增加生成成本。");
+    if(Number(params.duration)>=10)warnings.push(`${params.duration}s 长视频会增加生成成本。`);
+    if(params.generate_audio||params.generateAudio)warnings.push("生成音频会增加生成成本。");
+    const mediaCount=(params.startImg?1:0)+(params.endImg?1:0)+(params.refImages?.length||0)+(params.refVideos?.length||0)+(params.refAudios?.length||0)+(params.editVideo?.length||0);
+    if(mediaCount>1)warnings.push("多素材输入会增加生成成本和等待时间。");
+    const last=submitGuardRef.current.last;
+    if(last&&last.signature===signature&&Date.now()-last.at<5000)warnings.push("5 秒内提交了相同参数，可能会创建重复任务。");
+    return warnings;
+  }
+  function clearNodeTimer(id){
+    if(timersRef.current[id]){
+      clearInterval(timersRef.current[id]);
+      delete timersRef.current[id];
+    }
+  }
+  async function addNode(params){
+    if(submitGuardRef.current.busy){
+      window.alert("任务正在提交，请稍候。");
+      return false;
+    }
+    const signature=submitSignature(params);
+    const warnings=submitWarnings(params,signature);
+    if(warnings.length>0&&!window.confirm("请确认本次生成：\n\n"+warnings.join("\n")+" \n\n继续提交？")){
+      return false;
+    }
+    submitGuardRef.current.busy=true;
+    try{
     if(panel?.nodeId){
       const existing=nodes.find(n=>n.id===panel.nodeId);
       if(existing){
         const id=existing.id;
+        clearNodeTimer(id);
         setNodes(ns=>ns.map(n=>n.id===id?{...n,...params,status:"generating",progress:0,createdAt:Date.now()}:n));
         setSelId(id);setPanel(null);
-        simulateGen(id);return;
+        submitGuardRef.current.last={signature,at:Date.now()};
+        simulateGen(id);return true;
       }
     }
     const id="n"+(Date.now());
@@ -429,15 +478,22 @@ function App(){
     const newNode={id,x:nx,y:ny,status:"generating",progress:0,createdAt:Date.now(),...params};
     setNodes(ns=>[...ns,newNode]);
     setSelId(id);setPanel(null);
+    submitGuardRef.current.last={signature,at:Date.now()};
     simulateGen(id);
+    return true;
+    }finally{
+      submitGuardRef.current.busy=false;
+    }
   }
   function simulateGen(id){
+    clearNodeTimer(id);
     let p=0;
     const t=setInterval(()=>{
       p+=Math.random()*15+5;
-      if(p>=100){clearInterval(t);setNodes(ns=>ns.map(n=>n.id===id?{...n,status:"done",progress:100}:n));}
+      if(p>=100){clearNodeTimer(id);setNodes(ns=>ns.map(n=>n.id===id?{...n,status:"done",progress:100}:n));}
       else setNodes(ns=>ns.map(n=>n.id===id?{...n,progress:Math.round(p)}:n));
     },400);
+    timersRef.current[id]=t;
   }
 
   function onClickNode(id,wasSelected){
@@ -451,10 +507,27 @@ function App(){
     if(act==="preview")setPreview(n);
     else if(act==="download")alert("下载 "+(n.title||"video")+".mp4 (mock)");
     else if(act==="info")setPanel({type:"detail",nodeId:id});
+    else if(act==="cancel")cancelNode(id);
     else if(act==="delete")deleteNode(id);
   }
 
-  function deleteNode(id){setNodes(ns=>ns.filter(n=>n.id!==id));setSelId(null);setPanel(null);}
+  function cancelNode(id){
+    const n=nodes.find(x=>x.id===id);if(!n)return false;
+    if(n.status!=="generating"){window.alert("只有生成中的任务可以取消。");return false;}
+    if(!window.confirm("确认取消这个生成任务？"))return false;
+    clearNodeTimer(id);
+    setNodes(ns=>ns.map(x=>x.id===id?{...x,status:"cancelled",progress:0,updatedAt:Date.now()}:x));
+    return true;
+  }
+  function deleteNode(id){
+    const n=nodes.find(x=>x.id===id);if(!n)return false;
+    const msg=n.status==="generating"?"任务仍在生成中，删除会同时取消并移除画布记录。确认删除？":"确认从画布删除这个任务记录？";
+    if(!window.confirm(msg))return false;
+    clearNodeTimer(id);
+    setNodes(ns=>ns.filter(x=>x.id!==id));
+    setSelId(null);setPanel(null);
+    return true;
+  }
   function moveNode(id,pos){setNodes(ns=>ns.map(n=>n.id===id?{...n,...pos}:n));}
 
   const tools=[
@@ -560,6 +633,7 @@ function App(){
           onClose={()=>setPanel(null)}
           onPreview={()=>setPreview(n)}
           onDownload={()=>alert("下载 "+(n.title||"video")+".mp4 (mock)")}
+          onCancel={()=>cancelNode(n.id)}
           onDelete={()=>deleteNode(n.id)}
           onRegen={()=>setPanel({type:"create",nodeId:n.id})}
         />
@@ -602,6 +676,15 @@ function App(){
           };
           setNodes(ns=>[...ns,newNode]);
           setSelId(id);setPanel({type:"detail",nodeId:id});
+        }}
+        onCancelTask={(task)=>{
+          setNodes(ns=>ns.map(n=>n.taskId===task.task_id?{...n,status:"cancelled",progress:0,updatedAt:Date.now()}:n));
+        }}
+        onDeleteTask={(task)=>{
+          setNodes(ns=>{
+            ns.forEach(n=>{if(n.taskId===task.task_id)clearNodeTimer(n.id);});
+            return ns.filter(n=>n.taskId!==task.task_id);
+          });
         }}
       />}
       {preview&&<PreviewModal node={preview} onClose={()=>setPreview(null)}/>}

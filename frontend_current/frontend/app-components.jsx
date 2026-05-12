@@ -1,6 +1,7 @@
 // ── Frame sizing: depends on aspect ratio AND resolution ───────────────
 const FRAME_AR = { "16:9": [16, 9], "9:16": [9, 16], "1:1": [1, 1], "4:3": [4, 3], "3:4": [3, 4], "21:9": [21, 9], adaptive: [16, 9] };
 const STATUS_LABELS = { queued: "排队中", running: "生成中", succeeded: "已完成", failed: "生成失败", cancelled: "已取消", deleted: "已删除" };
+const NODE_STATUS_LABELS = { idle: "未开始", generating: "生成中", done: "已完成", error: "生成失败", cancelled: "已取消", deleted: "已删除" };
 const RES_SCALE = { "480p": 0.62, "720p": 0.82, "1080p": 1.0 };
 const MAX_DIM = 240;
 function frameSize(ar, res) {
@@ -15,6 +16,18 @@ window.frameSize = frameSize;
 function aspectValue(ar) {
   const [a, b] = FRAME_AR[ar] || [16, 9];
   return `${a}/${b}`;
+}
+function isTaskPendingStatus(status) {
+  return status === "queued" || status === "running";
+}
+function isTaskTerminalStatus(status) {
+  return status === "succeeded" || status === "failed" || status === "cancelled" || status === "deleted";
+}
+function isNodePendingStatus(status) {
+  return status === "generating" || status === "queued" || status === "running";
+}
+function isNodeTerminalStatus(status) {
+  return status === "done" || status === "error" || status === "cancelled" || status === "deleted" || isTaskTerminalStatus(status);
 }
 
 // ── VNode ────────────────────────────────────────────────────────────
@@ -41,7 +54,7 @@ function VNode({ node, sel, zoom, onClickNode, onMove, onAction }) {
     window.addEventListener("mouseup", up);
   }
 
-  const sc = { idle: "#ccc", generating: "#f59e0b", done: "#22c55e", error: "#ef4444" }[node.status] || "#ccc";
+  const sc = { idle: "#ccc", generating: "#f59e0b", done: "#22c55e", error: "#ef4444", cancelled: "#9ca3af", deleted: "#d1d5db" }[node.status] || "#ccc";
   const tbBtn = (icon, label, act, disabled) =>
   <button className="ntb-btn" title={label} disabled={disabled}
   onClick={(e) => {e.stopPropagation();if (!disabled) onAction(act);}}
@@ -60,6 +73,8 @@ function VNode({ node, sel, zoom, onClickNode, onMove, onAction }) {
           {tbBtn(<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>, "下载", "download", node.status !== "done")}
           {tbBtn(<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10" /><line x1="12" y1="16" x2="12" y2="12" /><line x1="12" y1="8" x2="12.01" y2="8" /></svg>, "信息", "info")}
           <div className="ntb-sep" />
+          {node.status === "generating" &&
+          tbBtn(<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9" /><path d="M9 9l6 6M15 9l-6 6" /></svg>, "取消生成任务", "cancel")}
           {tbBtn(<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6" /><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" /><path d="M10 11v6M14 11v6" /><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>, "从画布删除", "delete")}
         </div>
       }
@@ -87,6 +102,8 @@ function VNode({ node, sel, zoom, onClickNode, onMove, onAction }) {
           </div>
         }
         {node.status === "error" && <span style={{ fontSize: 11, color: "#ef4444" }}>生成失败</span>}
+        {node.status === "cancelled" && <span style={{ fontSize: 11, color: "#6b7280" }}>已取消</span>}
+        {node.status === "deleted" && <span style={{ fontSize: 11, color: "#9ca3af" }}>已删除</span>}
         <div style={{ position: "absolute", top: 7, right: 7, width: 6, height: 6, borderRadius: 3, background: sc }} />
         {sel && <>
           <div className="sel-dot" style={{ top: -4, left: -4 }} />
@@ -247,6 +264,7 @@ function CreatePanel({ node, onClose, onGenerate }) {
   const [webSearch, setWebSearch] = us(!!node?.webSearch || !!node?.tools?.some((t) => t.type === "web_search"));
   const sRef = ur(),eRef = ur(),dragRef = ur(null);
   const [panelPos, setPanelPos] = us(readPanelPos);
+  const [submitting, setSubmitting] = us(false);
 
   const selectedModel = MODELS.find((m) => m.id === model) || MODELS[0];
   const isFast = selectedModel.maxResolution === "720p";
@@ -266,8 +284,11 @@ function CreatePanel({ node, onClose, onGenerate }) {
     mode === "extend" ? hasPrompt && refVideos.length > 0 :
     false;
 
-  function go() {
-    onGenerate({
+  async function go() {
+    if (submitting || !ok) return;
+    setSubmitting(true);
+    try {
+      await Promise.resolve(onGenerate({
       mode, model, prompt, neg, ar, ratio: ar, resolution: res, duration: dur,
       startImg, endImg, refImages, refVideos, refAudios, editVideo,
       seed: seed || null, watermark, fixedCam, camera_fixed: fixedCam,
@@ -276,7 +297,12 @@ function CreatePanel({ node, onClose, onGenerate }) {
       webSearch, tools: webSearch ? [{ type: "web_search" }] : [],
       content,
       modelLabel: selectedModel.label
-    });
+      }));
+    } catch (err) {
+      window.alert(err?.message || "提交失败，请稍后重试。");
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   function startDrag(e) {
@@ -439,9 +465,9 @@ function CreatePanel({ node, onClose, onGenerate }) {
 
       </div>
       <div className="panel-footer">
-        <button onClick={go} disabled={!ok} className={"btn-gen" + (ok ? " ok" : " no")}>
+        <button onClick={go} disabled={!ok || submitting} className={"btn-gen" + (ok && !submitting ? " ok" : " no")}>
           <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 17l-6.2 4.3 2.4-7.4L2 9.4h7.6z" /></svg>
-          生成视频
+          {submitting ? "提交中…" : "生成视频"}
         </button>
       </div>
     </div>);
@@ -455,7 +481,7 @@ function fmtTime(ts) {
   return `${d.getFullYear()}/${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
-function DetailPanel({ node, onClose, onPreview, onDownload, onRegen, onDelete }) {
+function DetailPanel({ node, onClose, onPreview, onDownload, onRegen, onCancel, onDelete }) {
   const refs = [];
   if (node.startImg) refs.push({ src: node.startImg, label: "首帧", kind: "image" });
   if (node.endImg) refs.push({ src: node.endImg, label: "尾帧", kind: "image" });
@@ -463,6 +489,9 @@ function DetailPanel({ node, onClose, onPreview, onDownload, onRegen, onDelete }
   if (node.refImages) node.refImages.forEach((r, i) => refs.push({ src: r.url, label: "图片" + (i + 1), kind: "image" }));
   if (node.refVideos) node.refVideos.forEach((r, i) => refs.push({ src: r.url, label: "视频" + (i + 1), kind: "video" }));
   if (node.refAudios) node.refAudios.forEach((r, i) => refs.push({ src: r.url, label: "音频" + (i + 1), kind: "audio" }));
+  const isPending = isNodePendingStatus(node.status);
+  const isTerminal = isNodeTerminalStatus(node.status);
+  const statusText = NODE_STATUS_LABELS[node.status] || STATUS_LABELS[node.status] || node.status;
 
   return (
     <div className="panel">
@@ -481,7 +510,13 @@ function DetailPanel({ node, onClose, onPreview, onDownload, onRegen, onDelete }
               <svg width="20" height="20" viewBox="0 0 24 24" fill="white"><path d="M8 5v14l11-7z" /></svg>
             </div>
           </div>}
-          {node.status !== "done" && <span style={{ color: "rgba(255,255,255,.4)", fontSize: 12 }}>生成中…</span>}
+          {node.status !== "done" && <span style={{ color: "rgba(255,255,255,.48)", fontSize: 12 }}>{statusText}</span>}
+        </div>
+
+        {/* Status */}
+        <div>
+          <div className="fl">状态</div>
+          <div style={{ fontSize: 12, color: isPending ? "#b45309" : node.status === "error" ? "#b91c1c" : "#555", fontWeight: 600 }}>{statusText}</div>
         </div>
 
         {/* Title */}
@@ -555,6 +590,18 @@ function DetailPanel({ node, onClose, onPreview, onDownload, onRegen, onDelete }
             下载
           </button>
           <button onClick={onRegen} style={{ flex: 1, padding: "9px 0", borderRadius: 9, border: "1.5px solid #e0e0e0", background: "#fff", fontSize: 12.5, fontWeight: 500, cursor: "pointer", color: "#111" }}>重新生成</button>
+        </div>
+        <div style={{ display: "flex", gap: 6 }}>
+          {isPending && (
+            <button onClick={onCancel} style={{ flex: 1, padding: "9px 0", borderRadius: 9, border: "1.5px solid #f59e0b", background: "#fffbeb", fontSize: 12.5, fontWeight: 600, cursor: "pointer", color: "#b45309" }}>
+              取消任务
+            </button>
+          )}
+          {isTerminal && (
+            <button onClick={onDelete} style={{ flex: 1, padding: "9px 0", borderRadius: 9, border: "1.5px solid #fecaca", background: "#fff", fontSize: 12.5, fontWeight: 600, cursor: "pointer", color: "#b91c1c" }}>
+              删除记录
+            </button>
+          )}
         </div>
       </div>
     </div>);
@@ -851,11 +898,12 @@ function fmtRelativeTime(ts) {
   return fmtTime(ts);
 }
 
-function HistoryTaskCard({ task, onResume, onViewResult, onCopyId, onSelect }) {
+function HistoryTaskCard({ task, onResume, onViewResult, onCancel, onDelete, onCopyId, onSelect, actionBusy, actionError }) {
   const [copied, setCopied] = React.useState(false);
   const sc = HISTORY_STATUS_COLORS[task.status] || HISTORY_STATUS_COLORS.cancelled;
   const statusLabel = STATUS_LABELS[task.status] || task.status;
-  const isPending = task.status === "queued" || task.status === "running";
+  const isPending = isTaskPendingStatus(task.status);
+  const isTerminal = isTaskTerminalStatus(task.status);
   const isDone = task.status === "succeeded";
 
   function handleCopy(e) {
@@ -919,9 +967,14 @@ function HistoryTaskCard({ task, onResume, onViewResult, onCopyId, onSelect }) {
           {task.error_message}
         </div>
       )}
+      {actionError && (
+        <div style={{ fontSize: 11.5, color: "#b91c1c", background: "#fff1f2", borderRadius: 7, padding: "6px 10px", marginBottom: 10, lineHeight: 1.4 }}>
+          {actionError}
+        </div>
+      )}
 
       {/* Actions */}
-      <div style={{ display: "flex", gap: 6 }}>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
         <button onClick={handleCopy} style={{
           padding: "5px 10px", borderRadius: 7, border: "1px solid #e5e5e5", background: "#fafafa",
           fontSize: 11, color: "#666", cursor: "pointer", display: "flex", alignItems: "center", gap: 4,
@@ -939,6 +992,15 @@ function HistoryTaskCard({ task, onResume, onViewResult, onCopyId, onSelect }) {
           </button>
         )}
 
+        {isPending && (
+          <button disabled={!!actionBusy} onClick={e => { e.stopPropagation(); onCancel && onCancel(task); }} style={{
+            padding: "5px 10px", borderRadius: 7, border: "1px solid #f59e0b", background: "#fff7ed",
+            fontSize: 11, color: "#b45309", cursor: actionBusy ? "not-allowed" : "pointer", fontWeight: 600, opacity: actionBusy ? .55 : 1,
+          }}>
+            {actionBusy === "cancel" ? "取消中…" : "取消"}
+          </button>
+        )}
+
         {isDone && (
           <button onClick={e => { e.stopPropagation(); onViewResult && onViewResult(task); }} style={{
             padding: "5px 10px", borderRadius: 7, border: "none", background: "#111",
@@ -947,12 +1009,21 @@ function HistoryTaskCard({ task, onResume, onViewResult, onCopyId, onSelect }) {
             查看结果
           </button>
         )}
+
+        {isTerminal && task.status !== "deleted" && (
+          <button disabled={!!actionBusy} onClick={e => { e.stopPropagation(); onDelete && onDelete(task); }} style={{
+            padding: "5px 10px", borderRadius: 7, border: "1px solid #fecaca", background: "#fff",
+            fontSize: 11, color: "#b91c1c", cursor: actionBusy ? "not-allowed" : "pointer", fontWeight: 600, opacity: actionBusy ? .55 : 1,
+          }}>
+            {actionBusy === "delete" ? "删除中…" : "删除"}
+          </button>
+        )}
       </div>
     </div>
   );
 }
 
-function HistoryPanel({ onClose, onResumeTask, onViewResult }) {
+function HistoryPanel({ onClose, onResumeTask, onViewResult, onCancelTask, onDeleteTask }) {
   const { useState: us, useEffect: ue, useMemo: um } = React;
   const [statusFilter, setStatusFilter] = us("all");
   const [page, setPage] = us(1);
@@ -961,6 +1032,8 @@ function HistoryPanel({ onClose, onResumeTask, onViewResult }) {
   const [searchQuery, setSearchQuery] = us("");
   const [allTasks, setAllTasks] = us([]);
   const [detailTask, setDetailTask] = us(null);
+  const [actionBusy, setActionBusy] = us(null);
+  const [actionErrors, setActionErrors] = us({});
   const pageSize = 10;
 
   // Load mock data on mount
@@ -993,8 +1066,66 @@ function HistoryPanel({ onClose, onResumeTask, onViewResult }) {
   // Reset to page 1 when filter changes
   ue(() => { setPage(1); }, [statusFilter, searchQuery]);
 
+  function setTaskActionError(taskId, message) {
+    setActionErrors(prev => ({ ...prev, [taskId]: message }));
+  }
+
+  function clearTaskActionError(taskId) {
+    setActionErrors(prev => {
+      const next = { ...prev };
+      delete next[taskId];
+      return next;
+    });
+  }
+
+  async function runHistoryAction(task, action) {
+    if (!task || actionBusy) return;
+    const isCancel = action === "cancel";
+    if (isCancel && !isTaskPendingStatus(task.status)) {
+      setTaskActionError(task.task_id, "当前状态不可取消。");
+      return;
+    }
+    if (!isCancel && !isTaskTerminalStatus(task.status)) {
+      setTaskActionError(task.task_id, "任务仍在进行中，请先取消后再删除。");
+      return;
+    }
+    const confirmed = window.confirm(
+      isCancel
+        ? `确认取消任务 ${task.task_id}？`
+        : `确认删除任务 ${task.task_id}？删除后会从历史列表隐藏。`
+    );
+    if (!confirmed) return;
+
+    setActionBusy({ taskId: task.task_id, action });
+    clearTaskActionError(task.task_id);
+    try {
+      await new Promise((resolve, reject) => {
+        setTimeout(() => {
+          if (task.forceActionError) reject(new Error(task.forceActionError));
+          else resolve();
+        }, 360);
+      });
+      if (isCancel) {
+        const nextTask = { ...task, status: "cancelled", updated_at: new Date().toISOString(), error_message: null };
+        setAllTasks(list => list.map(t => t.task_id === task.task_id ? nextTask : t));
+        setDetailTask(current => current && current.task_id === task.task_id ? nextTask : current);
+        onCancelTask && onCancelTask(nextTask);
+      } else {
+        setAllTasks(list => list.filter(t => t.task_id !== task.task_id));
+        setDetailTask(current => current && current.task_id === task.task_id ? null : current);
+        onDeleteTask && onDeleteTask(task);
+      }
+    } catch (err) {
+      setTaskActionError(task.task_id, err?.message || (isCancel ? "取消任务失败。" : "删除任务失败。"));
+    } finally {
+      setActionBusy(null);
+    }
+  }
+
   // If showing detail view
   if (detailTask) {
+    const detailBusy = actionBusy?.taskId === detailTask.task_id ? actionBusy.action : null;
+    const detailActionError = actionErrors[detailTask.task_id];
     return (
       <div className="floatp" style={{ width: 380 }}>
         <div className="fp-hd">
@@ -1065,17 +1196,33 @@ function HistoryPanel({ onClose, onResumeTask, onViewResult }) {
               <div style={{ background: "#fef2f2", borderRadius: 8, padding: "9px 11px", fontSize: 12, color: "#dc2626", lineHeight: 1.5 }}>{detailTask.error_message}</div>
             </div>
           )}
+          {detailActionError && (
+            <div style={{ marginBottom: 14 }}>
+              <div className="fl">操作失败</div>
+              <div style={{ background: "#fff1f2", borderRadius: 8, padding: "9px 11px", fontSize: 12, color: "#b91c1c", lineHeight: 1.5 }}>{detailActionError}</div>
+            </div>
+          )}
 
           {/* Actions */}
-          <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
-            {(detailTask.status === "queued" || detailTask.status === "running") && (
+          <div style={{ display: "flex", gap: 6, marginTop: 6, flexWrap: "wrap" }}>
+            {isTaskPendingStatus(detailTask.status) && (
               <button onClick={() => { onResumeTask && onResumeTask(detailTask); }} style={{ flex: 1, padding: "10px 0", borderRadius: 9, border: "none", background: "#f59e0b", fontSize: 13, fontWeight: 600, cursor: "pointer", color: "#fff" }}>
                 恢复轮询
+              </button>
+            )}
+            {isTaskPendingStatus(detailTask.status) && (
+              <button disabled={!!detailBusy} onClick={() => runHistoryAction(detailTask, "cancel")} style={{ flex: 1, padding: "10px 0", borderRadius: 9, border: "1.5px solid #f59e0b", background: "#fffbeb", fontSize: 13, fontWeight: 600, cursor: detailBusy ? "not-allowed" : "pointer", color: "#b45309", opacity: detailBusy ? .55 : 1 }}>
+                {detailBusy === "cancel" ? "取消中…" : "取消任务"}
               </button>
             )}
             {detailTask.status === "succeeded" && detailTask.video_url && (
               <button onClick={() => { onViewResult && onViewResult(detailTask); }} style={{ flex: 1, padding: "10px 0", borderRadius: 9, border: "none", background: "#111", fontSize: 13, fontWeight: 600, cursor: "pointer", color: "#fff" }}>
                 查看结果
+              </button>
+            )}
+            {isTaskTerminalStatus(detailTask.status) && detailTask.status !== "deleted" && (
+              <button disabled={!!detailBusy} onClick={() => runHistoryAction(detailTask, "delete")} style={{ flex: 1, padding: "10px 0", borderRadius: 9, border: "1.5px solid #fecaca", background: "#fff", fontSize: 13, fontWeight: 600, cursor: detailBusy ? "not-allowed" : "pointer", color: "#b91c1c", opacity: detailBusy ? .55 : 1 }}>
+                {detailBusy === "delete" ? "删除中…" : "删除记录"}
               </button>
             )}
           </div>
@@ -1140,15 +1287,22 @@ function HistoryPanel({ onClose, onResumeTask, onViewResult }) {
           </div>
         )}
 
-        {!loading && !error && paged.map(task => (
+        {!loading && !error && paged.map(task => {
+            const busy = actionBusy?.taskId === task.task_id ? actionBusy.action : null;
+            return (
           <HistoryTaskCard
             key={task.task_id}
             task={task}
             onSelect={setDetailTask}
             onResume={onResumeTask}
             onViewResult={onViewResult}
+            onCancel={(t) => runHistoryAction(t, "cancel")}
+            onDelete={(t) => runHistoryAction(t, "delete")}
+            actionBusy={busy}
+            actionError={actionErrors[task.task_id]}
           />
-        ))}
+            );
+          })}
       </div>
 
       {/* Pagination */}
