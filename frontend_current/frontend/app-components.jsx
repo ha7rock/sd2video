@@ -820,7 +820,7 @@ function resolveLocalAssetUrl(url) {
   return localImageBaseUrl() + url;
 }
 
-function LocalImagePanel({ onClose, onGenerated }) {
+function LocalImagePanel({ onClose, onGenerated, status }) {
   const { useState: us } = React;
   const [prompt, setPrompt] = us("");
   const [size, setSize] = us("1024x1024");
@@ -829,7 +829,12 @@ function LocalImagePanel({ onClose, onGenerated }) {
   const [loading, setLoading] = us(false);
   const [error, setError] = us("");
   const [asset, setAsset] = us(null);
-  const ok = !!prompt.trim() && !loading;
+  const enabled = !!status?.enabled;
+  const connected = !!status?.connected;
+  const ok = !!prompt.trim() && !loading && enabled;
+  const stateMessage = enabled ? "" :
+    connected ? "本地 bridge 已连接，但 SD2VIDEO_ENABLE_CODEX_IMAGE 未开启。" :
+    "未连接本地 bridge，当前只能查看入口。";
 
   async function generate() {
     if (!ok) return;
@@ -864,6 +869,11 @@ function LocalImagePanel({ onClose, onGenerated }) {
         </button>
       </div>
       <div className="pb">
+        {!enabled && (
+          <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 8, padding: "8px 10px", fontSize: 12, color: "#92400e", lineHeight: 1.45 }}>
+            {stateMessage}
+          </div>
+        )}
         <div>
           <div className="fl">图片提示词</div>
           <textarea className="ta" value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="描述要作为视频参考的图片…" />

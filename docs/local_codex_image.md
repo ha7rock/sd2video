@@ -9,8 +9,8 @@ PYTHONPATH=src python3 -m sd2video.local_image_server auth-login
 SD2VIDEO_ENABLE_CODEX_IMAGE=1 PYTHONPATH=src python3 -m sd2video.local_image_server serve --host 127.0.0.1 --port 8765
 ```
 
-然后打开 `frontend_current/frontend/canvas.html`。工具栏会在
-`GET http://127.0.0.1:8765/api/v1/local-images/status` 返回 enabled 后显示“本地生图”。
+然后打开 `frontend_current/frontend/canvas.html`。工具栏始终显示“本地生图”入口；
+只有在 `GET http://127.0.0.1:8765/api/v1/local-images/status` 返回 enabled 后才允许生成。
 
 ## 本地文件
 

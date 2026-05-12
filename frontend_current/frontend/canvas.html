@@ -282,7 +282,7 @@ function App(){
   const[panActive,setPanActive]=useState(false);
   const[panel,setPanel]=useState(null);
   const[preview,setPreview]=useState(null);
-  const[localImageEnabled,setLocalImageEnabled]=useState(false);
+  const[localImageStatus,setLocalImageStatus]=useState({enabled:false,connected:false});
   const[localImages,setLocalImages]=useState([]);
   const panning=useRef(false);
   const panStart=useRef(null);
@@ -299,8 +299,8 @@ function App(){
     let cancelled=false;
     fetch(window.localImageBaseUrl()+"/api/v1/local-images/status")
       .then(r=>r.ok?r.json():null)
-      .then(data=>{if(!cancelled)setLocalImageEnabled(!!data?.enabled);})
-      .catch(()=>{if(!cancelled)setLocalImageEnabled(false);});
+      .then(data=>{if(!cancelled)setLocalImageStatus({enabled:!!data?.enabled,connected:!!data});})
+      .catch(()=>{if(!cancelled)setLocalImageStatus({enabled:false,connected:false});});
     return()=>{cancelled=true;};
   },[]);
 
@@ -473,7 +473,7 @@ function App(){
     {id:"hand",tip:"平移",icon:<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M18 11V8a2 2 0 00-4 0v-1a2 2 0 00-4 0V6a2 2 0 00-4 0v8l-1.5-1.5a2 2 0 00-2.8 2.8L6 19a5 5 0 005 1h3a5 5 0 005-5v-4z"/></svg>},
     {id:"sep"},
     {id:"video",tip:"创建视频",icon:<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M15 10l4.6-2.3A1 1 0 0121 8.7v6.6a1 1 0 01-1.4.9L15 14M3 8a2 2 0 012-2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg>},
-    ...(localImageEnabled?[{id:"local-image",tip:"本地生图",icon:<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="8" cy="10" r="1.6"/><path d="M21 15l-4.5-4.5L9 18"/></svg>}]:[]),
+    {id:"local-image",tip:localImageStatus.enabled?"本地生图":"本地生图（未启用）",disabled:!localImageStatus.enabled,icon:<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="8" cy="10" r="1.6"/><path d="M21 15l-4.5-4.5L9 18"/></svg>},
     {id:"history",tip:"历史任务",icon:<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>},
   ];
 
@@ -523,7 +523,7 @@ function App(){
       <div className="toolbar">
         {tools.map((t,i)=>t.id==="sep"
           ?<div key={i} className="t-sep"/>
-          :<button key={t.id} className={"tool-btn"+(tool===t.id?" on":"")} onClick={()=>onToolClick(t.id)}>
+          :<button key={t.id} className={"tool-btn"+(tool===t.id?" on":"")} style={t.disabled?{opacity:.45}:null} onClick={()=>onToolClick(t.id)}>
             {t.icon}
             <span className="t-tip">{t.tip}</span>
           </button>
@@ -583,6 +583,7 @@ function App(){
       {panel?.type==="local-image"&&<LocalImagePanel
         onClose={()=>setPanel(null)}
         onGenerated={(asset)=>setLocalImages(items=>[asset,...items.filter(it=>it.id!==asset.id)])}
+        status={localImageStatus}
       />}
       {panel?.type==="history"&&<HistoryPanel
         onClose={()=>setPanel(null)}
