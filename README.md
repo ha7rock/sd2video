@@ -157,10 +157,35 @@ docs/ark_video_api.md
 ## 测试
 
 ```bash
-pip install -e .
-PYTHONPATH=src python3 -m unittest discover -s tests
-python3 -m unittest discover
+# 安装（含开发依赖）
+pip install -e ".[dev]"
+
+# 运行全部测试（mock，不需要 API Key）
+python3 -m unittest discover -s tests -v
+
+# 编译检查
 python3 -m compileall -q src tests
+
+# Lint
+ruff check src/ tests/
+ruff format --check src/ tests/
 ```
 
-CI 默认只跑 mock 测试，不依赖外网或真实 API Key。
+**一条命令跑完默认测试，不需要真实 API Key。**
+
+### CI
+
+GitHub Actions 自动运行：
+
+- **test**：Python 3.10/3.11/3.12 × compile + unittest
+- **lint**：ruff check + format check
+
+推送到 `main` 或发 PR 自动触发。
+
+### Smoke 测试
+
+真实 API 调用手动开启，不纳入 CI：
+
+```bash
+ARK_RUN_SMOKE_TESTS=1 ARK_API_KEY=xxx python3 -m unittest tests.test_smoke_ark_video_api -v
+```
