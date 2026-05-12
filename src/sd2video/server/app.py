@@ -211,6 +211,8 @@ def _task_route(path: str) -> tuple[str | None, str | None]:
     parts = [part for part in path.split("/") if part]
     if len(parts) == 4 and parts[:3] == ["api", "v1", "tasks"]:
         return parts[3], None
+    if len(parts) == 5 and parts[:3] == ["api", "v1", "tasks"]:
+        return parts[3], parts[4]
     return None, None
 
 

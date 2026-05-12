@@ -11,9 +11,17 @@ requires-python = ">=3.10"
 
 [project.optional-dependencies]
 server = ["uvicorn>=0.20"]
+dev = ["ruff>=0.4"]
 
 [project.scripts]
 sd2video-server = "sd2video.server.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.ruff]
+line-length = 99
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E9", "F63", "F7", "F82"]

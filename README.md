@@ -266,4 +266,11 @@ python3 -m unittest discover
 python3 -m compileall -q src tests
 ```
 
-CI 默认只跑 mock 测试，不依赖外网或真实 API Key。
+默认测试覆盖后端 service/API、前端 `/api/v1` service 调用映射、mock backend
+create → poll → result/history → cancel/delete 链路，以及配置边界。前端 service
+测试通过本机 `node` 执行，无需 npm 安装依赖；CI 会显式安装 Node 22。
+
+CI 默认只跑 mock 测试，不依赖外网或真实 API Key。真实 Ark smoke test 必须手动开启：
+`ARK_RUN_SMOKE_TESTS=1` 只跑非生成查询；`ARK_SMOKE_CREATE_TASK=1` 会创建真实生成任务并可能产生费用。
+
+CI 门禁见 `.github/workflows/test.yml`，包含 Python 3.10-3.12 的 compile/test 和 ruff 语法/未定义名称检查。

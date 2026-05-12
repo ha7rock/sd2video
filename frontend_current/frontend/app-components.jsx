@@ -160,7 +160,7 @@ function validateCreateTaskParams(params, config = readBackendConfig()) {
   const errors = [];
   const model = MODELS.find((m) => m.id === params.model);
   const prompt = (params.prompt || "").trim();
-  const seed = params.seed === null || params.seed === "" ? null : Number(params.seed);
+  const seed = params.seed == null || params.seed === "" ? null : Number(params.seed);
   const hasVisualRef = (params.refImages || []).length > 0 || (params.refVideos || []).length > 0;
 
   if (!prompt && params.mode === "t2v") {
@@ -236,7 +236,7 @@ function createClientRequestId() {
 }
 
 function buildCreateTaskPayload(params) {
-  const seed = params.seed === null || params.seed === "" ? null : Number(params.seed);
+  const seed = params.seed == null || params.seed === "" ? null : Number(params.seed);
   return {
     mode: params.mode,
     model: params.model,
