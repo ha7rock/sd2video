@@ -154,6 +154,13 @@ state = wf.delete(task_id, confirm=False)
 docs/ark_video_api.md
 ```
 
+真实环境联调与端到端验收（HOM-30）请按这份 runbook 操作，复制 `.env.example` 为 `.env` 后填入 `ARK_API_KEY`：
+
+```text
+.env.example
+docs/real_environment_acceptance.md
+```
+
 ## 测试
 
 ```bash
