@@ -16,6 +16,7 @@ pip install -e .
 | `ARK_BASE_URL` | API 基础地址 | ❌ | `https://ark.cn-beijing.volces.com` |
 | `ARK_DEFAULT_MODEL_ID` | 默认模型 ID | ❌ | `doubao-seedance-2-0-fast-260128` |
 | `ARK_TIMEOUT_SECONDS` | 请求超时（秒） | ❌ | `30.0` |
+| `SD2VIDEO_ENABLE_CODEX_IMAGE` | 启用本地 Codex OAuth 临时生图 bridge | ❌ | 关闭 |
 
 ## 快速使用
 
@@ -164,3 +165,7 @@ python3 -m compileall -q src tests
 ```
 
 CI 默认只跑 mock 测试，不依赖外网或真实 API Key。
+
+## 本地临时生图
+
+工具栏里的“本地生图”入口默认关闭，仅用于本地开发参考图生成。它通过本地 bridge 使用 Codex/ChatGPT OAuth 调用 `gpt-image-2`，不会把 token 放进浏览器。开启、登录和清理方式见 `docs/local_codex_image.md`。

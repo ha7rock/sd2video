@@ -9,6 +9,7 @@
 <script type="text/babel">
 // ── Frame sizing: depends on aspect ratio AND resolution ───────────────
 const FRAME_AR = { "16:9": [16, 9], "9:16": [9, 16], "1:1": [1, 1], "4:3": [4, 3], "3:4": [3, 4], "21:9": [21, 9], adaptive: [16, 9] };
+const STATUS_LABELS = { queued: "排队中", running: "生成中", succeeded: "已完成", failed: "生成失败", cancelled: "已取消", deleted: "已删除" };
 const RES_SCALE = { "480p": 0.62, "720p": 0.82, "1080p": 1.0 };
 const MAX_DIM = 240;
 function frameSize(ar, res) {
@@ -179,6 +180,25 @@ function MediaPicker({ label, accept, kind, items, onChange, max = 1 }) {
   );
 }
 
+function LocalImageStrip({ items = [], onPick, disabled }) {
+  const images = items.slice(0, 6);
+  if (images.length === 0) return null;
+  return (
+    <div style={{ marginTop: 8 }}>
+      <div style={{ fontSize: 10.5, color: "#aaa", marginBottom: 6 }}>本地生图素材</div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+        {images.map((it) =>
+        <button key={it.id || it.url} disabled={disabled} onClick={() => !disabled && onPick(it)}
+        title={it.provider_label || "本地临时 / Codex OAuth / 非 Ark 生成"}
+        style={{ width: 48, height: 48, borderRadius: 8, border: "1px solid #e4e4e4", background: "#f7f7f7", overflow: "hidden", cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? .4 : 1, padding: 0 }}>
+            <img src={it.url} style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function buildContent({ mode, prompt, startImg, endImg, refImages, refVideos, refAudios, editVideo }) {
   const content = [];
   if (prompt.trim()) content.push({ type: "text", text: prompt.trim() });
@@ -231,7 +251,7 @@ function savePanelPos(pos) {
 }
 
 // ── CreatePanel ──────────────────────────────────────────────────────
-function CreatePanel({ node, onClose, onGenerate }) {
+function CreatePanel({ node, onClose, onGenerate, localImages = [] }) {
   const { useState: us, useRef: ur, useEffect: ue, useMemo: um } = React;
   const [mode, setMode] = us(node?.mode || "t2v");
   const [model, setModel] = us(node?.model || MODELS[0].id);
@@ -348,12 +368,16 @@ function CreatePanel({ node, onClose, onGenerate }) {
                   </div>
             )}
               </div>
+            <LocalImageStrip items={localImages} onPick={(asset) => {
+              if (!startImg) setStart(asset.url); else if (mode === "first_last" && !endImg) setEnd(asset.url); else setStart(asset.url);
+            }} />
           </div>
         }
         {mode === "reference" &&
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           <div className="fl">参考素材</div>
           <MediaPicker label="参考图" accept="image/*" kind="image" items={refImages} onChange={setRefImages} max={9} />
+          <LocalImageStrip items={localImages} disabled={refImages.length >= 9} onPick={(asset) => setRefImages((list) => [...list, { url: asset.url, name: asset.title, kind: "image", source: "local-codex-oauth" }].slice(0, 9))} />
           <MediaPicker label="参考视频" accept="video/*" kind="video" items={refVideos} onChange={setRefVideos} max={3} />
           <MediaPicker label="参考音频" accept="audio/*" kind="audio" items={refAudios} onChange={setRefAudios} max={3} />
         </div>}
@@ -362,6 +386,7 @@ function CreatePanel({ node, onClose, onGenerate }) {
           <div className="fl">编辑素材</div>
           <MediaPicker label="待编辑视频" accept="video/*" kind="video" items={editVideo} onChange={setEditVideo} max={1} />
           <MediaPicker label="参考图" accept="image/*" kind="image" items={refImages} onChange={setRefImages} max={9} />
+          <LocalImageStrip items={localImages} disabled={refImages.length >= 9} onPick={(asset) => setRefImages((list) => [...list, { url: asset.url, name: asset.title, kind: "image", source: "local-codex-oauth" }].slice(0, 9))} />
           <MediaPicker label="参考音频" accept="audio/*" kind="audio" items={refAudios} onChange={setRefAudios} max={3} />
         </div>}
         {mode === "extend" &&
@@ -728,14 +753,20 @@ function Sketch({ kind }) {
   </svg>;
   return null;
 }
-function AssetsPanel({ onClose, nodes }) {
+function AssetsPanel({ onClose, nodes, localImages = [] }) {
   const { useState: us } = React;
   const [q, setQ] = us("");
   // mix mock + completed video nodes as "video" asset
   const videos = nodes.filter((n) => n.status === "done").map((n) => ({
     kind: "video", title: n.title || n.prompt?.slice(0, 24) || "视频", grad: "linear-gradient(135deg,#1a1a2e,#16213e,#0f3460)", node: n
   }));
-  const all = [...videos, ...MOCK_ASSETS].filter((a) => !q || a.title.includes(q));
+  const generated = localImages.map((a) => ({
+    kind: "image",
+    title: a.title || "本地生成图片",
+    url: a.url,
+    source: a.provider_label || "本地临时 / Codex OAuth / 非 Ark 生成",
+  }));
+  const all = [...generated, ...videos, ...MOCK_ASSETS].filter((a) => !q || a.title.includes(q));
   const cols = [[], []];
   all.forEach((a, i) => cols[i % 2].push({ ...a, _i: i }));
   return (
@@ -762,7 +793,7 @@ function AssetsPanel({ onClose, nodes }) {
           <div key={a._i} className="ap-card">
                 {a.kind === "image" || a.kind === "video" ?
             <div className="ap-thumb" style={{ background: a.grad, aspectRatio: i % 3 === 0 ? "4/5" : i % 3 === 1 ? "1/1" : "3/4" }}>
-                    {a.kind === "image" && <Sketch kind={a.sketch} />}
+                    {a.kind === "image" && (a.url ? <img src={a.url} style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : <Sketch kind={a.sketch} />)}
                     {a.kind === "video" && <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}><div style={{ width: 24, height: 24, borderRadius: 12, background: "rgba(255,255,255,0.22)", display: "flex", alignItems: "center", justifyContent: "center" }}><svg width="10" height="10" viewBox="0 0 24 24" fill="white"><path d="M8 5v14l11-7z" /></svg></div></div>}
                   </div> :
 
@@ -772,7 +803,7 @@ function AssetsPanel({ onClose, nodes }) {
                   </div>
             }
                 <div className="ap-name">{a.title.length > 14 ? a.title.slice(0, 14) + "…" : a.title}</div>
-                <div className="ap-kind">{a.kind === "image" ? "图片" : a.kind === "text" ? "文本" : "视频"}</div>
+                <div className="ap-kind">{a.source || (a.kind === "image" ? "图片" : a.kind === "text" ? "文本" : "视频")}</div>
               </div>
           )}
           </div>
@@ -782,7 +813,511 @@ function AssetsPanel({ onClose, nodes }) {
 
 }
 
-Object.assign(window, { VNode, CreatePanel, DetailPanel, PreviewModal, AgentPanel, AssetsPanel, frameSize, FRAME_AR });
+// ── LocalImagePanel ───────────────────────────────────────────────────
+const LOCAL_IMAGE_ENDPOINT = "http://127.0.0.1:8765";
+const LOCAL_IMAGE_SIZES = ["1024x1024", "1536x1024", "1024x1536"];
+const LOCAL_IMAGE_QUALITIES = ["low", "medium", "high"];
+const LOCAL_IMAGE_QUALITY_LABELS = { low: "低", medium: "中", high: "高" };
+
+function localImageBaseUrl() {
+  return (window.SD2VIDEO_LOCAL_IMAGE_ENDPOINT || LOCAL_IMAGE_ENDPOINT).replace(/\/$/, "");
+}
+
+function resolveLocalAssetUrl(url) {
+  if (!url) return "";
+  if (/^https?:\/\//.test(url) || url.startsWith("blob:") || url.startsWith("data:")) return url;
+  return localImageBaseUrl() + url;
+}
+
+function LocalImagePanel({ onClose, onGenerated }) {
+  const { useState: us } = React;
+  const [prompt, setPrompt] = us("");
+  const [size, setSize] = us("1024x1024");
+  const [quality, setQuality] = us("medium");
+  const [background, setBackground] = us("opaque");
+  const [loading, setLoading] = us(false);
+  const [error, setError] = us("");
+  const [asset, setAsset] = us(null);
+  const ok = !!prompt.trim() && !loading;
+
+  async function generate() {
+    if (!ok) return;
+    setLoading(true);
+    setError("");
+    try {
+      const res = await fetch(localImageBaseUrl() + "/api/v1/local-images/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt, size, quality, background, output_format: "png" }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || "本地生图失败");
+      }
+      const next = { ...data.asset, url: resolveLocalAssetUrl(data.asset?.url), metadata: data.metadata };
+      setAsset(next);
+      onGenerated(next);
+    } catch (e) {
+      setError(e?.message || "本地生图失败，请检查本地 bridge");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="panel">
+      <div className="ph">
+        <div><div className="pt">本地生图</div><div className="ps">本地临时 · Codex OAuth · 非 Ark 生成</div></div>
+        <button className="pc" onClick={onClose}>
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 6L6 18M6 6l12 12" /></svg>
+        </button>
+      </div>
+      <div className="pb">
+        <div>
+          <div className="fl">图片提示词</div>
+          <textarea className="ta" value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="描述要作为视频参考的图片…" />
+        </div>
+        <div>
+          <div className="fl">尺寸</div>
+          <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>{LOCAL_IMAGE_SIZES.map((s) => <Pill key={s} label={s} on={size === s} onClick={() => setSize(s)} />)}</div>
+        </div>
+        <div>
+          <div className="fl">质量</div>
+          <div style={{ display: "flex", gap: 5 }}>{LOCAL_IMAGE_QUALITIES.map((q) => <Pill key={q} label={LOCAL_IMAGE_QUALITY_LABELS[q]} on={quality === q} onClick={() => setQuality(q)} />)}</div>
+        </div>
+        <div>
+          <div className="fl">背景</div>
+          <div style={{ display: "flex", gap: 5 }}>
+            <Pill label="不透明" on={background === "opaque"} onClick={() => setBackground("opaque")} />
+            <Pill label="透明" on={background === "transparent"} onClick={() => setBackground("transparent")} />
+          </div>
+        </div>
+        {asset && (
+          <div>
+            <div className="fl">预览</div>
+            <div style={{ borderRadius: 10, overflow: "hidden", border: "1px solid #e6e6e6", background: "#f7f7f7", aspectRatio: size.replace("x", "/") }}>
+              <img src={asset.url} style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+            </div>
+            <div style={{ fontSize: 11, color: "#888", lineHeight: 1.4, marginTop: 6 }}>已加入资产库，可作为后续首帧或参考图素材使用。</div>
+          </div>
+        )}
+        {error && <div style={{ background: "#fef2f2", borderRadius: 8, padding: "8px 10px", fontSize: 12, color: "#b91c1c", lineHeight: 1.45 }}>{error}</div>}
+      </div>
+      <div className="panel-footer">
+        <button onClick={generate} disabled={!ok} className={"btn-gen" + (ok ? " ok" : " no")}>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 17l-6.2 4.3 2.4-7.4L2 9.4h7.6z" /></svg>
+          {loading ? "生成中…" : asset ? "重新生成" : "生成图片"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── HistoryPanel ──────────────────────────────────────────────────────
+const HISTORY_STATUS_OPTIONS = [
+  ["all", "全部"],
+  ["queued", "排队中"],
+  ["running", "生成中"],
+  ["succeeded", "已完成"],
+  ["failed", "失败"],
+  ["cancelled", "已取消"],
+];
+
+const HISTORY_STATUS_COLORS = {
+  queued: { bg: "#f3f0ff", fg: "#7c3aed", dot: "#a78bfa" },
+  running: { bg: "#fffbeb", fg: "#b45309", dot: "#f59e0b" },
+  succeeded: { bg: "#ecfdf5", fg: "#047857", dot: "#10b981" },
+  failed: { bg: "#fef2f2", fg: "#b91c1c", dot: "#ef4444" },
+  cancelled: { bg: "#f5f5f5", fg: "#6b7280", dot: "#9ca3af" },
+  deleted: { bg: "#f5f5f5", fg: "#9ca3af", dot: "#d1d5db" },
+};
+
+// Mock data generator for demo / testing
+function generateMockHistoryTasks(count = 23) {
+  const statuses = ["queued", "running", "succeeded", "failed", "cancelled"];
+  const models = ["doubao-seedance-2-0-260128", "doubao-seedance-2-0-fast-260128"];
+  const modelLabels = { "doubao-seedance-2-0-260128": "Seedance 2.0", "doubao-seedance-2-0-fast-260128": "Seedance 2.0 Fast" };
+  const prompts = [
+    "一只猫在草地上奔跑",
+    "城市夜景延时摄影",
+    "海底世界珊瑚礁",
+    "日落时分的海滩",
+    "机器人在工厂工作",
+    "樱花飘落的街道",
+    "星空下的雪山",
+    "水墨画风格的山水",
+    "未来城市天际线",
+    "小女孩在花园追蝴蝶",
+    "宇航员漫步月球",
+    "古风宫殿全景",
+    "咖啡拉花特写",
+    "雨中东京街头",
+    "沙漠中的绿洲",
+  ];
+  const ratios = ["16:9", "9:16", "1:1", "4:3"];
+  const resolutions = ["480p", "720p", "1080p"];
+  const tasks = [];
+  const now = Date.now();
+  for (let i = 0; i < count; i++) {
+    const status = statuses[Math.floor(Math.random() * statuses.length)];
+    const model = models[Math.floor(Math.random() * models.length)];
+    const created = now - Math.floor(Math.random() * 7 * 24 * 3600 * 1000);
+    tasks.push({
+      task_id: "cgt-" + Math.random().toString(36).slice(2, 10),
+      status,
+      model,
+      modelLabel: modelLabels[model],
+      prompt: prompts[i % prompts.length],
+      ratio: ratios[Math.floor(Math.random() * ratios.length)],
+      resolution: resolutions[Math.floor(Math.random() * resolutions.length)],
+      duration: 4 + Math.floor(Math.random() * 12),
+      created_at: new Date(created).toISOString(),
+      updated_at: new Date(created + Math.floor(Math.random() * 300000)).toISOString(),
+      video_url: status === "succeeded" ? "https://example.com/video-" + i + ".mp4" : null,
+      error_message: status === "failed" ? "生成超时，请重试" : null,
+    });
+  }
+  return tasks.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+}
+
+function fmtRelativeTime(ts) {
+  if (!ts) return "—";
+  const diff = Date.now() - new Date(ts).getTime();
+  if (diff < 60000) return "刚刚";
+  if (diff < 3600000) return Math.floor(diff / 60000) + " 分钟前";
+  if (diff < 86400000) return Math.floor(diff / 3600000) + " 小时前";
+  if (diff < 604800000) return Math.floor(diff / 86400000) + " 天前";
+  return fmtTime(ts);
+}
+
+function HistoryTaskCard({ task, onResume, onViewResult, onCopyId, onSelect }) {
+  const [copied, setCopied] = React.useState(false);
+  const sc = HISTORY_STATUS_COLORS[task.status] || HISTORY_STATUS_COLORS.cancelled;
+  const statusLabel = STATUS_LABELS[task.status] || task.status;
+  const isPending = task.status === "queued" || task.status === "running";
+  const isDone = task.status === "succeeded";
+
+  function handleCopy(e) {
+    e.stopPropagation();
+    navigator.clipboard.writeText(task.task_id).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+    if (onCopyId) onCopyId(task.task_id);
+  }
+
+  return (
+    <div onClick={() => onSelect && onSelect(task)} style={{
+      background: "#fff", borderRadius: 12, border: "1px solid #eee",
+      padding: "12px 14px", cursor: "pointer",
+      transition: "border-color .15s, box-shadow .15s",
+    }}
+    onMouseEnter={e => { e.currentTarget.style.borderColor = "#d0d0d0"; e.currentTarget.style.boxShadow = "0 2px 8px rgba(0,0,0,.06)"; }}
+    onMouseLeave={e => { e.currentTarget.style.borderColor = "#eee"; e.currentTarget.style.boxShadow = "none"; }}
+    >
+      {/* Top row: status + model + time */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{
+            display: "inline-flex", alignItems: "center", gap: 5,
+            padding: "3px 9px", borderRadius: 12, fontSize: 11, fontWeight: 600,
+            background: sc.bg, color: sc.fg,
+          }}>
+            <span style={{ width: 6, height: 6, borderRadius: 3, background: sc.dot }} />
+            {statusLabel}
+          </span>
+          <span style={{ fontSize: 11, color: "#999", fontWeight: 500 }}>{task.modelLabel || "Seedance"}</span>
+        </div>
+        <span style={{ fontSize: 10.5, color: "#bbb", fontVariantNumeric: "tabular-nums" }}>{fmtRelativeTime(task.created_at)}</span>
+      </div>
+
+      {/* Prompt */}
+      <div style={{ fontSize: 13, color: "#222", fontWeight: 500, lineHeight: 1.45, marginBottom: 8, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        {task.prompt || "（无提示词）"}
+      </div>
+
+      {/* Params row */}
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+        {[
+          ["ID", task.task_id.slice(0, 12) + "…"],
+          ["比例", task.ratio],
+          ["分辨率", task.resolution],
+          ["时长", task.duration + "s"],
+          ...(task.video_url ? [["有结果", "✓"]] : []),
+        ].map(([k, v]) => (
+          <span key={k} style={{
+            fontSize: 10, color: "#888", background: "#f7f7f7", borderRadius: 5,
+            padding: "2px 7px", fontVariantNumeric: "tabular-nums",
+          }}>{k}: {v}</span>
+        ))}
+      </div>
+
+      {/* Error message */}
+      {task.error_message && (
+        <div style={{ fontSize: 11.5, color: "#dc2626", background: "#fef2f2", borderRadius: 7, padding: "6px 10px", marginBottom: 10, lineHeight: 1.4 }}>
+          {task.error_message}
+        </div>
+      )}
+
+      {/* Actions */}
+      <div style={{ display: "flex", gap: 6 }}>
+        <button onClick={handleCopy} style={{
+          padding: "5px 10px", borderRadius: 7, border: "1px solid #e5e5e5", background: "#fafafa",
+          fontSize: 11, color: "#666", cursor: "pointer", display: "flex", alignItems: "center", gap: 4,
+        }}>
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+          {copied ? "已复制" : "复制 ID"}
+        </button>
+
+        {isPending && (
+          <button onClick={e => { e.stopPropagation(); onResume && onResume(task); }} style={{
+            padding: "5px 10px", borderRadius: 7, border: "1px solid #f59e0b", background: "#fffbeb",
+            fontSize: 11, color: "#b45309", cursor: "pointer", fontWeight: 600,
+          }}>
+            恢复轮询
+          </button>
+        )}
+
+        {isDone && (
+          <button onClick={e => { e.stopPropagation(); onViewResult && onViewResult(task); }} style={{
+            padding: "5px 10px", borderRadius: 7, border: "none", background: "#111",
+            fontSize: 11, color: "#fff", cursor: "pointer", fontWeight: 600,
+          }}>
+            查看结果
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function HistoryPanel({ onClose, onResumeTask, onViewResult }) {
+  const { useState: us, useEffect: ue, useMemo: um } = React;
+  const [statusFilter, setStatusFilter] = us("all");
+  const [page, setPage] = us(1);
+  const [loading, setLoading] = us(false);
+  const [error, setError] = us(null);
+  const [searchQuery, setSearchQuery] = us("");
+  const [allTasks, setAllTasks] = us([]);
+  const [detailTask, setDetailTask] = us(null);
+  const pageSize = 10;
+
+  // Load mock data on mount
+  ue(() => {
+    setLoading(true);
+    // Simulate API call
+    setTimeout(() => {
+      setAllTasks(generateMockHistoryTasks(23));
+      setLoading(false);
+    }, 600);
+  }, []);
+
+  // Filter & paginate
+  const filtered = um(() => {
+    let list = allTasks;
+    if (statusFilter !== "all") list = list.filter(t => t.status === statusFilter);
+    if (searchQuery.trim()) {
+      const q = searchQuery.trim().toLowerCase();
+      list = list.filter(t =>
+        (t.task_id && t.task_id.toLowerCase().includes(q)) ||
+        (t.prompt && t.prompt.toLowerCase().includes(q))
+      );
+    }
+    return list;
+  }, [allTasks, statusFilter, searchQuery]);
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const paged = filtered.slice((page - 1) * pageSize, page * pageSize);
+
+  // Reset to page 1 when filter changes
+  ue(() => { setPage(1); }, [statusFilter, searchQuery]);
+
+  // If showing detail view
+  if (detailTask) {
+    return (
+      <div className="floatp" style={{ width: 380 }}>
+        <div className="fp-hd">
+          <div className="fp-ttl" style={{ cursor: "pointer" }} onClick={() => setDetailTask(null)}>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M15 18l-6-6 6-6"/></svg>
+            <span>任务详情</span>
+          </div>
+          <button className="fp-min" onClick={onClose} title="关闭">
+            <svg width="14" height="2" viewBox="0 0 14 2"><rect width="14" height="2" rx="1" fill="#666"/></svg>
+          </button>
+        </div>
+        <div className="fp-bd">
+          {/* Task ID */}
+          <div style={{ marginBottom: 14 }}>
+            <div className="fl">任务 ID</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <code style={{ fontSize: 12, color: "#333", background: "#f5f5f5", padding: "5px 10px", borderRadius: 7, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{detailTask.task_id}</code>
+              <button onClick={() => navigator.clipboard.writeText(detailTask.task_id)} style={{ padding: "5px 10px", borderRadius: 7, border: "1px solid #e5e5e5", background: "#fafafa", fontSize: 11, color: "#666", cursor: "pointer", whiteSpace: "nowrap" }}>复制</button>
+            </div>
+          </div>
+
+          {/* Status */}
+          <div style={{ marginBottom: 14 }}>
+            <div className="fl">状态</div>
+            {(() => {
+              const sc = HISTORY_STATUS_COLORS[detailTask.status] || HISTORY_STATUS_COLORS.cancelled;
+              return (
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "4px 12px", borderRadius: 14, fontSize: 12, fontWeight: 600, background: sc.bg, color: sc.fg }}>
+                  <span style={{ width: 7, height: 7, borderRadius: 4, background: sc.dot }} />
+                  {STATUS_LABELS[detailTask.status] || detailTask.status}
+                </span>
+              );
+            })()}
+          </div>
+
+          {/* Prompt */}
+          {detailTask.prompt && (
+            <div style={{ marginBottom: 14 }}>
+              <div className="fl">提示词</div>
+              <div style={{ background: "#f7f7f7", borderRadius: 8, padding: "9px 11px", fontSize: 12.5, color: "#333", lineHeight: 1.55 }}>{detailTask.prompt}</div>
+            </div>
+          )}
+
+          {/* Params grid */}
+          <div style={{ marginBottom: 14 }}>
+            <div className="fl">参数</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+              {[
+                ["模型", detailTask.modelLabel || detailTask.model],
+                ["比例", detailTask.ratio],
+                ["分辨率", detailTask.resolution],
+                ["时长", detailTask.duration + "s"],
+                ["创建时间", fmtTime(detailTask.created_at)],
+                ["更新时间", fmtTime(detailTask.updated_at)],
+              ].filter(([, v]) => v && v !== "—").map(([k, v]) => (
+                <div key={k} style={{ background: "#f7f7f7", borderRadius: 7, padding: "7px 9px" }}>
+                  <div style={{ fontSize: 9.5, color: "#999", fontWeight: 600, letterSpacing: "0.05em", textTransform: "uppercase", marginBottom: 1 }}>{k}</div>
+                  <div style={{ fontSize: 12, color: "#111", fontWeight: 500, fontVariantNumeric: "tabular-nums" }}>{v}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Error */}
+          {detailTask.error_message && (
+            <div style={{ marginBottom: 14 }}>
+              <div className="fl">错误信息</div>
+              <div style={{ background: "#fef2f2", borderRadius: 8, padding: "9px 11px", fontSize: 12, color: "#dc2626", lineHeight: 1.5 }}>{detailTask.error_message}</div>
+            </div>
+          )}
+
+          {/* Actions */}
+          <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+            {(detailTask.status === "queued" || detailTask.status === "running") && (
+              <button onClick={() => { onResumeTask && onResumeTask(detailTask); }} style={{ flex: 1, padding: "10px 0", borderRadius: 9, border: "none", background: "#f59e0b", fontSize: 13, fontWeight: 600, cursor: "pointer", color: "#fff" }}>
+                恢复轮询
+              </button>
+            )}
+            {detailTask.status === "succeeded" && detailTask.video_url && (
+              <button onClick={() => { onViewResult && onViewResult(detailTask); }} style={{ flex: 1, padding: "10px 0", borderRadius: 9, border: "none", background: "#111", fontSize: 13, fontWeight: 600, cursor: "pointer", color: "#fff" }}>
+                查看结果
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="floatp" style={{ width: 400 }}>
+      <div className="fp-hd">
+        <div className="fp-ttl"><span>历史任务</span></div>
+        <button className="fp-min" onClick={onClose} title="关闭">
+          <svg width="14" height="2" viewBox="0 0 14 2"><rect width="14" height="2" rx="1" fill="#666"/></svg>
+        </button>
+      </div>
+
+      {/* Search */}
+      <div style={{ padding: "0 18px 10px" }}>
+        <div style={{ display: "flex", alignItems: "center", background: "#fff", border: "1px solid #e2e2e2", borderRadius: 18, padding: "7px 14px", height: 34, boxSizing: "border-box" }}>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#aaa" strokeWidth="2" style={{ flexShrink: 0, marginRight: 8 }}><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+          <input value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="搜索任务 ID 或提示词…" style={{ flex: 1, border: "none", background: "none", outline: "none", fontSize: 13, color: "#222", fontFamily: "inherit" }} />
+        </div>
+      </div>
+
+      {/* Status filter */}
+      <div style={{ padding: "0 18px 10px", display: "flex", gap: 5, flexWrap: "wrap" }}>
+        {HISTORY_STATUS_OPTIONS.map(([val, label]) => (
+          <button key={val} onClick={() => setStatusFilter(val)} style={{
+            padding: "4px 11px", borderRadius: 20, fontSize: 11.5, fontWeight: 600, cursor: "pointer",
+            border: statusFilter === val ? "1.5px solid #111" : "1.5px solid #e5e5e5",
+            background: statusFilter === val ? "#111" : "#fff",
+            color: statusFilter === val ? "#fff" : "#777",
+            transition: "all .12s",
+          }}>{label}</button>
+        ))}
+      </div>
+
+      {/* Task list */}
+      <div style={{ flex: 1, overflowY: "auto", padding: "0 18px 14px", display: "flex", flexDirection: "column", gap: 10 }}>
+        {loading && (
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 40, gap: 10 }}>
+            <div style={{ display: "flex", gap: 5 }}>
+              {[0, 1, 2].map(i => <div key={i} style={{ width: 6, height: 6, borderRadius: 3, background: "#ccc", animation: `blink 1.2s ${i * 0.2}s ease-in-out infinite` }} />)}
+            </div>
+            <span style={{ fontSize: 12, color: "#999" }}>加载中…</span>
+          </div>
+        )}
+
+        {error && !loading && (
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 40, gap: 10 }}>
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="1.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+            <span style={{ fontSize: 12.5, color: "#666" }}>{error}</span>
+            <button onClick={() => { setError(null); setLoading(true); setTimeout(() => { setAllTasks(generateMockHistoryTasks(23)); setLoading(false); }, 500); }} style={{ padding: "6px 14px", borderRadius: 8, border: "1px solid #ddd", background: "#fff", fontSize: 12, cursor: "pointer", color: "#333" }}>重试</button>
+          </div>
+        )}
+
+        {!loading && !error && filtered.length === 0 && (
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 40, gap: 8 }}>
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#d0d0d0" strokeWidth="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 3v18"/></svg>
+            <span style={{ fontSize: 13, color: "#bbb" }}>{searchQuery ? "没有匹配的任务" : "暂无历史任务"}</span>
+          </div>
+        )}
+
+        {!loading && !error && paged.map(task => (
+          <HistoryTaskCard
+            key={task.task_id}
+            task={task}
+            onSelect={setDetailTask}
+            onResume={onResumeTask}
+            onViewResult={onViewResult}
+          />
+        ))}
+      </div>
+
+      {/* Pagination */}
+      {!loading && !error && filtered.length > 0 && (
+        <div style={{ padding: "10px 18px 14px", borderTop: "1px solid #f0f0f0", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <span style={{ fontSize: 11, color: "#999" }}>共 {filtered.length} 条</span>
+          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            <button disabled={page <= 1} onClick={() => setPage(p => p - 1)} style={{
+              width: 28, height: 28, borderRadius: 7, border: "1px solid #e5e5e5", background: page <= 1 ? "#f9f9f9" : "#fff",
+              cursor: page <= 1 ? "not-allowed" : "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+              color: page <= 1 ? "#ccc" : "#666", opacity: page <= 1 ? 0.5 : 1,
+            }}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M15 18l-6-6 6-6"/></svg>
+            </button>
+            <span style={{ fontSize: 11.5, color: "#666", fontVariantNumeric: "tabular-nums", minWidth: 40, textAlign: "center" }}>{page} / {totalPages}</span>
+            <button disabled={page >= totalPages} onClick={() => setPage(p => p + 1)} style={{
+              width: 28, height: 28, borderRadius: 7, border: "1px solid #e5e5e5", background: page >= totalPages ? "#f9f9f9" : "#fff",
+              cursor: page >= totalPages ? "not-allowed" : "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+              color: page >= totalPages ? "#ccc" : "#666", opacity: page >= totalPages ? 0.5 : 1,
+            }}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 18l6-6-6-6"/></svg>
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+Object.assign(window, { VNode, CreatePanel, DetailPanel, PreviewModal, AgentPanel, AssetsPanel, LocalImagePanel, HistoryPanel, HistoryTaskCard, HISTORY_STATUS_OPTIONS, HISTORY_STATUS_COLORS, frameSize, FRAME_AR, localImageBaseUrl });
 
 </script>
 <template id="__bundler_thumbnail" data-bg-color="#f1f1f1">
@@ -1060,6 +1595,8 @@ function App(){
   const[panActive,setPanActive]=useState(false);
   const[panel,setPanel]=useState(null);
   const[preview,setPreview]=useState(null);
+  const[localImageEnabled,setLocalImageEnabled]=useState(false);
+  const[localImages,setLocalImages]=useState([]);
   const panning=useRef(false);
   const panStart=useRef(null);
   const cvRef=useRef();
@@ -1070,6 +1607,15 @@ function App(){
   const selNode=nodes.find(n=>n.id===selId)||null;
   // Hand mode active if tool=hand OR space-held
   const handMode=tool==="hand"||spaceDown;
+
+  useEffect(()=>{
+    let cancelled=false;
+    fetch(window.localImageBaseUrl()+"/api/v1/local-images/status")
+      .then(r=>r.ok?r.json():null)
+      .then(data=>{if(!cancelled)setLocalImageEnabled(!!data?.enabled);})
+      .catch(()=>{if(!cancelled)setLocalImageEnabled(false);});
+    return()=>{cancelled=true;};
+  },[]);
 
   // Smoothly animate zoom toward a screen point
   const animRef=useRef(null);
@@ -1240,10 +1786,14 @@ function App(){
     {id:"hand",tip:"平移",icon:<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M18 11V8a2 2 0 00-4 0v-1a2 2 0 00-4 0V6a2 2 0 00-4 0v8l-1.5-1.5a2 2 0 00-2.8 2.8L6 19a5 5 0 005 1h3a5 5 0 005-5v-4z"/></svg>},
     {id:"sep"},
     {id:"video",tip:"创建视频",icon:<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M15 10l4.6-2.3A1 1 0 0121 8.7v6.6a1 1 0 01-1.4.9L15 14M3 8a2 2 0 012-2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg>},
+    ...(localImageEnabled?[{id:"local-image",tip:"本地生图",icon:<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="8" cy="10" r="1.6"/><path d="M21 15l-4.5-4.5L9 18"/></svg>}]:[]),
+    {id:"history",tip:"历史任务",icon:<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>},
   ];
 
   function onToolClick(id){
     if(id==="video"){setPanel({type:"create"});setTool("cursor");}
+    else if(id==="local-image"){setPanel({type:"local-image"});setTool("cursor");}
+    else if(id==="history"){setPanel(panel?.type==="history"?null:{type:"history"});}
     else setTool(id);
   }
 
@@ -1306,6 +1856,9 @@ function App(){
         <button className={"fab"+(panel?.type==="agent"?" active":"")} title="对话" onClick={()=>setPanel(panel?.type==="agent"?null:{type:"agent"})}>
           <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor"><path d="M4 4h16a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H8l-4 4z"/></svg>
         </button>
+        <button className={"fab"+(panel?.type==="history"?" active":"")} title="历史任务" onClick={()=>setPanel(panel?.type==="history"?null:{type:"history"})}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+        </button>
         <button className={"fab"+(panel?.type==="assets"?" active":"")} title="资产库" onClick={()=>setPanel(panel?.type==="assets"?null:{type:"assets"})}>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
         </button>
@@ -1325,6 +1878,7 @@ function App(){
           node={nodes.find(n=>n.id===panel.nodeId)}
           onClose={()=>setPanel(null)}
           onGenerate={addNode}
+          localImages={localImages}
         />
       )}
       {panel?.type==="detail"&&(()=>{const n=nodes.find(x=>x.id===panel.nodeId);return n&&(
@@ -1338,7 +1892,49 @@ function App(){
         />
       );})()}
       {panel?.type==="agent"&&<AgentPanel onClose={()=>setPanel(null)} nodes={nodes}/>}
-      {panel?.type==="assets"&&<AssetsPanel onClose={()=>setPanel(null)} nodes={nodes}/>}
+      {panel?.type==="assets"&&<AssetsPanel onClose={()=>setPanel(null)} nodes={nodes} localImages={localImages}/>}
+      {panel?.type==="local-image"&&<LocalImagePanel
+        onClose={()=>setPanel(null)}
+        onGenerated={(asset)=>setLocalImages(items=>[asset,...items.filter(it=>it.id!==asset.id)])}
+      />}
+      {panel?.type==="history"&&<HistoryPanel
+        onClose={()=>setPanel(null)}
+        onResumeTask={(task)=>{
+          // Resume polling: create a canvas node from the history task and start polling
+          const id="n"+Date.now();
+          const[w,h]=window.frameSize(task.ratio||"16:9",task.resolution||"720p");
+          const cx=window.innerWidth/2,cy=window.innerHeight/2;
+          const nx=(cx-pan.x)/zoom-w/2,ny=(cy-pan.y)/zoom-h/2;
+          const newNode={
+            id,x:nx,y:ny,status:"generating",progress:0,
+            createdAt:Date.now(),taskId:task.task_id,
+            mode:"t2v",model:task.model,modelLabel:task.modelLabel||"Seedance",
+            ar:task.ratio||"16:9",ratio:task.ratio||"16:9",
+            resolution:task.resolution||"720p",duration:task.duration||5,
+            prompt:task.prompt||"",
+          };
+          setNodes(ns=>[...ns,newNode]);
+          setSelId(id);setPanel(null);
+          simulateGen(id);
+        }}
+        onViewResult={(task)=>{
+          // Create a done node and open preview
+          const id="n"+Date.now();
+          const[w,h]=window.frameSize(task.ratio||"16:9",task.resolution||"720p");
+          const cx=window.innerWidth/2,cy=window.innerHeight/2;
+          const nx=(cx-pan.x)/zoom-w/2,ny=(cy-pan.y)/zoom-h/2;
+          const newNode={
+            id,x:nx,y:ny,status:"done",progress:100,
+            createdAt:Date.now(),taskId:task.task_id,
+            mode:"t2v",model:task.model,modelLabel:task.modelLabel||"Seedance",
+            ar:task.ratio||"16:9",ratio:task.ratio||"16:9",
+            resolution:task.resolution||"720p",duration:task.duration||5,
+            prompt:task.prompt||"",videoUrl:task.video_url,
+          };
+          setNodes(ns=>[...ns,newNode]);
+          setSelId(id);setPanel({type:"detail",nodeId:id});
+        }}
+      />}
       {preview&&<PreviewModal node={preview} onClose={()=>setPreview(null)}/>}
     </div>
   );

@@ -171,6 +171,25 @@ function MediaPicker({ label, accept, kind, items, onChange, max = 1 }) {
   );
 }
 
+function LocalImageStrip({ items = [], onPick, disabled }) {
+  const images = items.slice(0, 6);
+  if (images.length === 0) return null;
+  return (
+    <div style={{ marginTop: 8 }}>
+      <div style={{ fontSize: 10.5, color: "#aaa", marginBottom: 6 }}>本地生图素材</div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+        {images.map((it) =>
+        <button key={it.id || it.url} disabled={disabled} onClick={() => !disabled && onPick(it)}
+        title={it.provider_label || "本地临时 / Codex OAuth / 非 Ark 生成"}
+        style={{ width: 48, height: 48, borderRadius: 8, border: "1px solid #e4e4e4", background: "#f7f7f7", overflow: "hidden", cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? .4 : 1, padding: 0 }}>
+            <img src={it.url} style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function buildContent({ mode, prompt, startImg, endImg, refImages, refVideos, refAudios, editVideo }) {
   const content = [];
   if (prompt.trim()) content.push({ type: "text", text: prompt.trim() });
@@ -223,7 +242,7 @@ function savePanelPos(pos) {
 }
 
 // ── CreatePanel ──────────────────────────────────────────────────────
-function CreatePanel({ node, onClose, onGenerate }) {
+function CreatePanel({ node, onClose, onGenerate, localImages = [] }) {
   const { useState: us, useRef: ur, useEffect: ue, useMemo: um } = React;
   const [mode, setMode] = us(node?.mode || "t2v");
   const [model, setModel] = us(node?.model || MODELS[0].id);
@@ -340,12 +359,16 @@ function CreatePanel({ node, onClose, onGenerate }) {
                   </div>
             )}
               </div>
+            <LocalImageStrip items={localImages} onPick={(asset) => {
+              if (!startImg) setStart(asset.url); else if (mode === "first_last" && !endImg) setEnd(asset.url); else setStart(asset.url);
+            }} />
           </div>
         }
         {mode === "reference" &&
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           <div className="fl">参考素材</div>
           <MediaPicker label="参考图" accept="image/*" kind="image" items={refImages} onChange={setRefImages} max={9} />
+          <LocalImageStrip items={localImages} disabled={refImages.length >= 9} onPick={(asset) => setRefImages((list) => [...list, { url: asset.url, name: asset.title, kind: "image", source: "local-codex-oauth" }].slice(0, 9))} />
           <MediaPicker label="参考视频" accept="video/*" kind="video" items={refVideos} onChange={setRefVideos} max={3} />
           <MediaPicker label="参考音频" accept="audio/*" kind="audio" items={refAudios} onChange={setRefAudios} max={3} />
         </div>}
@@ -354,6 +377,7 @@ function CreatePanel({ node, onClose, onGenerate }) {
           <div className="fl">编辑素材</div>
           <MediaPicker label="待编辑视频" accept="video/*" kind="video" items={editVideo} onChange={setEditVideo} max={1} />
           <MediaPicker label="参考图" accept="image/*" kind="image" items={refImages} onChange={setRefImages} max={9} />
+          <LocalImageStrip items={localImages} disabled={refImages.length >= 9} onPick={(asset) => setRefImages((list) => [...list, { url: asset.url, name: asset.title, kind: "image", source: "local-codex-oauth" }].slice(0, 9))} />
           <MediaPicker label="参考音频" accept="audio/*" kind="audio" items={refAudios} onChange={setRefAudios} max={3} />
         </div>}
         {mode === "extend" &&
@@ -720,14 +744,20 @@ function Sketch({ kind }) {
   </svg>;
   return null;
 }
-function AssetsPanel({ onClose, nodes }) {
+function AssetsPanel({ onClose, nodes, localImages = [] }) {
   const { useState: us } = React;
   const [q, setQ] = us("");
   // mix mock + completed video nodes as "video" asset
   const videos = nodes.filter((n) => n.status === "done").map((n) => ({
     kind: "video", title: n.title || n.prompt?.slice(0, 24) || "视频", grad: "linear-gradient(135deg,#1a1a2e,#16213e,#0f3460)", node: n
   }));
-  const all = [...videos, ...MOCK_ASSETS].filter((a) => !q || a.title.includes(q));
+  const generated = localImages.map((a) => ({
+    kind: "image",
+    title: a.title || "本地生成图片",
+    url: a.url,
+    source: a.provider_label || "本地临时 / Codex OAuth / 非 Ark 生成",
+  }));
+  const all = [...generated, ...videos, ...MOCK_ASSETS].filter((a) => !q || a.title.includes(q));
   const cols = [[], []];
   all.forEach((a, i) => cols[i % 2].push({ ...a, _i: i }));
   return (
@@ -754,7 +784,7 @@ function AssetsPanel({ onClose, nodes }) {
           <div key={a._i} className="ap-card">
                 {a.kind === "image" || a.kind === "video" ?
             <div className="ap-thumb" style={{ background: a.grad, aspectRatio: i % 3 === 0 ? "4/5" : i % 3 === 1 ? "1/1" : "3/4" }}>
-                    {a.kind === "image" && <Sketch kind={a.sketch} />}
+                    {a.kind === "image" && (a.url ? <img src={a.url} style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : <Sketch kind={a.sketch} />)}
                     {a.kind === "video" && <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}><div style={{ width: 24, height: 24, borderRadius: 12, background: "rgba(255,255,255,0.22)", display: "flex", alignItems: "center", justifyContent: "center" }}><svg width="10" height="10" viewBox="0 0 24 24" fill="white"><path d="M8 5v14l11-7z" /></svg></div></div>}
                   </div> :
 
@@ -764,7 +794,7 @@ function AssetsPanel({ onClose, nodes }) {
                   </div>
             }
                 <div className="ap-name">{a.title.length > 14 ? a.title.slice(0, 14) + "…" : a.title}</div>
-                <div className="ap-kind">{a.kind === "image" ? "图片" : a.kind === "text" ? "文本" : "视频"}</div>
+                <div className="ap-kind">{a.source || (a.kind === "image" ? "图片" : a.kind === "text" ? "文本" : "视频")}</div>
               </div>
           )}
           </div>
@@ -772,6 +802,106 @@ function AssetsPanel({ onClose, nodes }) {
       </div>
     </div>);
 
+}
+
+// ── LocalImagePanel ───────────────────────────────────────────────────
+const LOCAL_IMAGE_ENDPOINT = "http://127.0.0.1:8765";
+const LOCAL_IMAGE_SIZES = ["1024x1024", "1536x1024", "1024x1536"];
+const LOCAL_IMAGE_QUALITIES = ["low", "medium", "high"];
+const LOCAL_IMAGE_QUALITY_LABELS = { low: "低", medium: "中", high: "高" };
+
+function localImageBaseUrl() {
+  return (window.SD2VIDEO_LOCAL_IMAGE_ENDPOINT || LOCAL_IMAGE_ENDPOINT).replace(/\/$/, "");
+}
+
+function resolveLocalAssetUrl(url) {
+  if (!url) return "";
+  if (/^https?:\/\//.test(url) || url.startsWith("blob:") || url.startsWith("data:")) return url;
+  return localImageBaseUrl() + url;
+}
+
+function LocalImagePanel({ onClose, onGenerated }) {
+  const { useState: us } = React;
+  const [prompt, setPrompt] = us("");
+  const [size, setSize] = us("1024x1024");
+  const [quality, setQuality] = us("medium");
+  const [background, setBackground] = us("opaque");
+  const [loading, setLoading] = us(false);
+  const [error, setError] = us("");
+  const [asset, setAsset] = us(null);
+  const ok = !!prompt.trim() && !loading;
+
+  async function generate() {
+    if (!ok) return;
+    setLoading(true);
+    setError("");
+    try {
+      const res = await fetch(localImageBaseUrl() + "/api/v1/local-images/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt, size, quality, background, output_format: "png" }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || "本地生图失败");
+      }
+      const next = { ...data.asset, url: resolveLocalAssetUrl(data.asset?.url), metadata: data.metadata };
+      setAsset(next);
+      onGenerated(next);
+    } catch (e) {
+      setError(e?.message || "本地生图失败，请检查本地 bridge");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="panel">
+      <div className="ph">
+        <div><div className="pt">本地生图</div><div className="ps">本地临时 · Codex OAuth · 非 Ark 生成</div></div>
+        <button className="pc" onClick={onClose}>
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 6L6 18M6 6l12 12" /></svg>
+        </button>
+      </div>
+      <div className="pb">
+        <div>
+          <div className="fl">图片提示词</div>
+          <textarea className="ta" value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="描述要作为视频参考的图片…" />
+        </div>
+        <div>
+          <div className="fl">尺寸</div>
+          <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>{LOCAL_IMAGE_SIZES.map((s) => <Pill key={s} label={s} on={size === s} onClick={() => setSize(s)} />)}</div>
+        </div>
+        <div>
+          <div className="fl">质量</div>
+          <div style={{ display: "flex", gap: 5 }}>{LOCAL_IMAGE_QUALITIES.map((q) => <Pill key={q} label={LOCAL_IMAGE_QUALITY_LABELS[q]} on={quality === q} onClick={() => setQuality(q)} />)}</div>
+        </div>
+        <div>
+          <div className="fl">背景</div>
+          <div style={{ display: "flex", gap: 5 }}>
+            <Pill label="不透明" on={background === "opaque"} onClick={() => setBackground("opaque")} />
+            <Pill label="透明" on={background === "transparent"} onClick={() => setBackground("transparent")} />
+          </div>
+        </div>
+        {asset && (
+          <div>
+            <div className="fl">预览</div>
+            <div style={{ borderRadius: 10, overflow: "hidden", border: "1px solid #e6e6e6", background: "#f7f7f7", aspectRatio: size.replace("x", "/") }}>
+              <img src={asset.url} style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+            </div>
+            <div style={{ fontSize: 11, color: "#888", lineHeight: 1.4, marginTop: 6 }}>已加入资产库，可作为后续首帧或参考图素材使用。</div>
+          </div>
+        )}
+        {error && <div style={{ background: "#fef2f2", borderRadius: 8, padding: "8px 10px", fontSize: 12, color: "#b91c1c", lineHeight: 1.45 }}>{error}</div>}
+      </div>
+      <div className="panel-footer">
+        <button onClick={generate} disabled={!ok} className={"btn-gen" + (ok ? " ok" : " no")}>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 17l-6.2 4.3 2.4-7.4L2 9.4h7.6z" /></svg>
+          {loading ? "生成中…" : asset ? "重新生成" : "生成图片"}
+        </button>
+      </div>
+    </div>
+  );
 }
 
 // ── HistoryPanel ──────────────────────────────────────────────────────
@@ -1178,4 +1308,4 @@ function HistoryPanel({ onClose, onResumeTask, onViewResult }) {
   );
 }
 
-Object.assign(window, { VNode, CreatePanel, DetailPanel, PreviewModal, AgentPanel, AssetsPanel, HistoryPanel, HistoryTaskCard, HISTORY_STATUS_OPTIONS, HISTORY_STATUS_COLORS, frameSize, FRAME_AR });
+Object.assign(window, { VNode, CreatePanel, DetailPanel, PreviewModal, AgentPanel, AssetsPanel, LocalImagePanel, HistoryPanel, HistoryTaskCard, HISTORY_STATUS_OPTIONS, HISTORY_STATUS_COLORS, frameSize, FRAME_AR, localImageBaseUrl });
