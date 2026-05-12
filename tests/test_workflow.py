@@ -98,6 +98,39 @@ class ArkTaskDetailTests(unittest.TestCase):
         self.assertTrue(detail.is_terminal)
         self.assertTrue(detail.succeeded)
 
+    def test_from_response_succeeded_with_content_object_video_url(self) -> None:
+        data = {
+            "id": "cgt-object",
+            "status": "succeeded",
+            "content": {
+                "video_url": "https://cdn.example.com/object-video.mp4",
+            },
+        }
+
+        detail = ArkTaskDetail.from_response(data)
+
+        self.assertEqual("succeeded", detail.status)
+        self.assertEqual("https://cdn.example.com/object-video.mp4", detail.video_url)
+        self.assertTrue(detail.succeeded)
+
+    def test_from_response_succeeded_with_nested_content_object_video_url(self) -> None:
+        data = {
+            "data": {
+                "id": "cgt-object-nested",
+                "status": "succeeded",
+                "content": {
+                    "video_url": {"url": "https://cdn.example.com/object-nested.mp4"},
+                },
+            }
+        }
+
+        detail = ArkTaskDetail.from_response(data)
+
+        self.assertEqual(
+            "https://cdn.example.com/object-nested.mp4",
+            detail.video_url,
+        )
+
     def test_from_response_flat_structure(self) -> None:
         """Some API responses may not wrap in 'data'."""
         data = {"id": "cgt-789", "status": "queued"}

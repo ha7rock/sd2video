@@ -618,12 +618,15 @@ def _task_data(raw: Any) -> Mapping[str, Any]:
     return data if isinstance(data, Mapping) else raw
 
 
-def _expires_at(updated_at: str | None) -> str | None:
+def _expires_at(updated_at: Any) -> str | None:
     if not updated_at:
         return None
     try:
-        base = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
-    except ValueError:
+        if isinstance(updated_at, (int, float)):
+            base = datetime.fromtimestamp(updated_at, timezone.utc)
+        else:
+            base = datetime.fromisoformat(str(updated_at).replace("Z", "+00:00"))
+    except (OSError, TypeError, ValueError):
         return None
     return (base + timedelta(hours=24)).astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 

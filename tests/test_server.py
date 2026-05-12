@@ -5,9 +5,9 @@ import json
 import unittest
 from typing import Any
 
-from sd2video.ark import ArkAuthenticationError, ArkNetworkError
+from sd2video.ark import ArkAuthenticationError, ArkNetworkError, ArkTaskDetail
 from sd2video.server import MockVideoBackend, ServerConfig, create_app
-from sd2video.server.service import VideoBackend
+from sd2video.server.service import VideoBackend, serialize_task
 
 
 class BrokenBackend(VideoBackend):
@@ -170,6 +170,27 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertTrue(deleted["deleted"])
         self.assertEqual("deleted", deleted["status"])
+
+    def test_serialize_task_accepts_epoch_timestamps_for_video_expiry(self) -> None:
+        detail = ArkTaskDetail(
+            task_id="cgt-real",
+            status="succeeded",
+            model="doubao-seedance-2-0-fast-260128",
+            video_url="https://cdn.example.com/video.mp4",
+            created_at=1778583357,
+            updated_at=1778583483,
+            usage={"total_tokens": 1},
+            raw={
+                "id": "cgt-real",
+                "status": "succeeded",
+                "content": {"video_url": "https://cdn.example.com/video.mp4"},
+            },
+        )
+
+        serialized = serialize_task(detail)
+
+        self.assertEqual("https://cdn.example.com/video.mp4", serialized["video_url"])
+        self.assertEqual("2026-05-13T10:58:03Z", serialized["video_url_expires_at"])
 
     def test_create_validation_error_is_mapped(self) -> None:
         status, _, body = request(self.app, "POST", "/api/v1/tasks", body={"mode": "t2v", "prompt": ""})

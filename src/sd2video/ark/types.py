@@ -82,7 +82,7 @@ class ArkTaskDetail:
     created_at: str | None = None
     updated_at: str | None = None
     usage: dict[str, Any] | None = None
-    content: list[dict[str, Any]] | None = None
+    content: Any = None
     raw: Any = field(default=None, repr=False)
 
     @classmethod
@@ -126,15 +126,28 @@ class ArkTaskDetail:
         if isinstance(v, str) and v:
             return v
 
-        # Nested in content array
+        # Current Ark successful generation responses may put the result at
+        # content.video_url instead of returning the request-style content list.
         content = task_data.get("content")
+        if isinstance(content, Mapping):
+            url = content.get("video_url")
+            if isinstance(url, str) and url:
+                return url
+            if isinstance(url, Mapping):
+                nested = url.get("url")
+                if isinstance(nested, str) and nested:
+                    return nested
+
+        # Nested in request-style content array
         if isinstance(content, list):
             for item in content:
                 if isinstance(item, Mapping):
                     if item.get("type") == "video_url":
                         url = item.get("video_url")
                         if isinstance(url, Mapping):
-                            return url.get("url")
+                            nested = url.get("url")
+                            if isinstance(nested, str) and nested:
+                                return nested
                         elif isinstance(url, str):
                             return url
         return None
