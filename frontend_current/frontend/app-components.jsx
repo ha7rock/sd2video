@@ -655,12 +655,32 @@ function DetailPanel({ node, onClose, onPreview, onDownload, onRegen, onDelete }
         {/* Thumbnail / preview */}
         <div onClick={node.status === "done" ? onPreview : undefined}
         style={{ borderRadius: 10, overflow: "hidden", background: "#111", aspectRatio: aspectValue(node.ar), display: "flex", alignItems: "center", justifyContent: "center", position: "relative", cursor: node.status === "done" ? "pointer" : "default" }}>
-          {node.status === "done" && <div style={{ position: "absolute", inset: 0, background: "linear-gradient(135deg,#1a1a2e,#16213e,#0f3460)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-            <div style={{ width: 44, height: 44, borderRadius: 22, background: "rgba(255,255,255,.18)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="white"><path d="M8 5v14l11-7z" /></svg>
+          {node.status === "done" && node.video_url && !node.video_url.startsWith("blob:") ? (
+            <video src={node.video_url} muted playsInline preload="metadata" style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }} />
+          ) : node.status === "done" ? (
+            <div style={{ position: "absolute", inset: 0, background: "linear-gradient(135deg,#1a1a2e,#16213e,#0f3460)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <div style={{ width: 44, height: 44, borderRadius: 22, background: "rgba(255,255,255,.18)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="white"><path d="M8 5v14l11-7z" /></svg>
+              </div>
             </div>
-          </div>}
-          {node.status !== "done" && <span style={{ color: "rgba(255,255,255,.4)", fontSize: 12 }}>生成中…</span>}
+          ) : node.status === "error" ? (
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6, padding: 12 }}>
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+              <span style={{ color: "#ef4444", fontSize: 11, textAlign: "center" }}>{node.error_message || "生成失败"}</span>
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
+              <div style={{ display: "flex", gap: 5 }}>{[0,1,2].map(i=><div key={i} style={{width:6,height:6,borderRadius:3,background:"rgba(255,255,255,.3)",animation:"blink 1.2s "+(i*0.2)+"s ease-in-out infinite"}}/>)}</div>
+              <span style={{ color: "rgba(255,255,255,.4)", fontSize: 11 }}>生成中…</span>
+            </div>
+          )}
+          {node.status === "done" && node.video_url && (
+            <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <div style={{ width: 44, height: 44, borderRadius: 22, background: "rgba(0,0,0,.35)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="white"><path d="M8 5v14l11-7z" /></svg>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Title */}
@@ -723,6 +743,26 @@ function DetailPanel({ node, onClose, onPreview, onDownload, onRegen, onDelete }
           </div>
         </div>
 
+        {/* Error message */}
+        {node.error_message && (
+          <div>
+            <div className="fl">错误信息</div>
+            <div style={{ background: "#fef2f2", borderRadius: 8, padding: "9px 11px", fontSize: 12, color: "#dc2626", lineHeight: 1.5 }}>{node.error_message}</div>
+          </div>
+        )}
+
+        {/* Video URL */}
+        {node.video_url && node.status === "done" && (
+          <div>
+            <div className="fl">视频链接</div>
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <input readOnly value={node.video_url} style={{ flex: 1, fontSize: 11, color: "#555", background: "#f5f5f5", border: "1px solid #e8e8e8", borderRadius: 7, padding: "6px 10px", outline: "none", overflow: "hidden", textOverflow: "ellipsis" }} />
+              <button onClick={() => {navigator.clipboard.writeText(node.video_url).then(()=>alert("已复制"))}} style={{ padding: "6px 10px", borderRadius: 7, border: "1px solid #e5e5e5", background: "#fafafa", fontSize: 11, color: "#666", cursor: "pointer", whiteSpace: "nowrap" }}>复制</button>
+            </div>
+            <div style={{ fontSize: 10, color: "#aaa", marginTop: 4 }}>链接 24 小时内有效，请及时下载</div>
+          </div>
+        )}
+
         {/* Generation time */}
         <div>
           <div className="fl">生成时间</div>
@@ -745,6 +785,7 @@ function DetailPanel({ node, onClose, onPreview, onDownload, onRegen, onDelete }
 // ── PreviewModal ─────────────────────────────────────────────────────
 function PreviewModal({ node, onClose }) {
   const [a, b] = FRAME_AR[node.ar] || [16, 9];
+  const isRealVideo = node.video_url && !node.video_url.startsWith("blob:");
   React.useEffect(() => {
     function onKey(e) {if (e.key === "Escape") onClose();}
     window.addEventListener("keydown", onKey);
@@ -753,11 +794,15 @@ function PreviewModal({ node, onClose }) {
   return (
     <div className="modal-bg" onClick={onClose}>
       <div className="modal-frame" style={{ aspectRatio: `${a}/${b}` }} onClick={(e) => e.stopPropagation()}>
-        <div style={{ position: "absolute", inset: 0, background: "linear-gradient(135deg,#1a1a2e,#16213e,#0f3460)", borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center" }}>
-          <div style={{ width: 72, height: 72, borderRadius: 36, background: "rgba(255,255,255,0.2)", backdropFilter: "blur(8px)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}>
-            <svg width="30" height="30" viewBox="0 0 24 24" fill="white"><path d="M8 5v14l11-7z" /></svg>
+        {isRealVideo ? (
+          <video src={node.video_url} controls autoPlay style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "contain", borderRadius: 12, background: "#000" }} />
+        ) : (
+          <div style={{ position: "absolute", inset: 0, background: "linear-gradient(135deg,#1a1a2e,#16213e,#0f3460)", borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <div style={{ width: 72, height: 72, borderRadius: 36, background: "rgba(255,255,255,0.2)", backdropFilter: "blur(8px)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}>
+              <svg width="30" height="30" viewBox="0 0 24 24" fill="white"><path d="M8 5v14l11-7z" /></svg>
+            </div>
           </div>
-        </div>
+        )}
         <div style={{ position: "absolute", bottom: -32, left: 0, right: 0, textAlign: "center", color: "rgba(255,255,255,.6)", fontSize: 11.5 }}>
           {node.modelLabel} · {node.ar} · {node.resolution} · {node.duration}s
         </div>
