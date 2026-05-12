@@ -351,8 +351,10 @@ function CreatePanel({ node, onClose, onGenerate }) {
     mode === "edit" ? hasPrompt && editVideo.length === 1 && editVideo.every(assetReady) :
     mode === "extend" ? hasPrompt && refVideos.length > 0 && refVideos.every(assetReady) :
     false;
+  const generateDisabled = !ok || assetsUploading || assetsFailed;
 
   function go() {
+    if (generateDisabled) return;
     const assets = {
       first_frame: mode === "first_frame" || mode === "first_last" ? backendAssetUrl(startImg) : null,
       last_frame: mode === "first_last" ? backendAssetUrl(endImg) : null,
@@ -538,7 +540,7 @@ function CreatePanel({ node, onClose, onGenerate }) {
       </div>
       <div className="panel-footer">
         {(assetsUploading || assetsFailed) && <div style={{ fontSize: 10.5, color: assetsFailed ? "#b45309" : "#888", textAlign: "center", marginBottom: 7 }}>{assetsFailed ? "素材上传失败，请重试或删除后替换" : "素材上传中"}</div>}
-        <button onClick={go} disabled={!ok} className={"btn-gen" + (ok ? " ok" : " no")}>
+        <button onClick={go} disabled={generateDisabled} className={"btn-gen" + (!generateDisabled ? " ok" : " no")}>
           <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 17l-6.2 4.3 2.4-7.4L2 9.4h7.6z" /></svg>
           生成视频
         </button>
