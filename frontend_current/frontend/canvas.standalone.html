@@ -820,7 +820,10 @@ const LOCAL_IMAGE_QUALITIES = ["low", "medium", "high"];
 const LOCAL_IMAGE_QUALITY_LABELS = { low: "低", medium: "中", high: "高" };
 
 function localImageBaseUrl() {
-  return (window.SD2VIDEO_LOCAL_IMAGE_ENDPOINT || LOCAL_IMAGE_ENDPOINT).replace(/\/$/, "");
+  const override = window.SD2VIDEO_LOCAL_IMAGE_ENDPOINT;
+  if (typeof override === "string") return override.replace(/\/$/, "");
+  if (window.location && /^https?:$/.test(window.location.protocol)) return window.location.origin;
+  return LOCAL_IMAGE_ENDPOINT;
 }
 
 function resolveLocalAssetUrl(url) {
