@@ -112,24 +112,52 @@ selected = client.list_tasks(task_ids=["cgt-xxx", "cgt-yyy"])
 ## 取消或删除
 
 ```python
+# 取消排队/生成中的任务
+state = workflow.cancel(task_id, confirm=True)
+
+# 删除已完成/失败的历史任务
+state = workflow.delete(task_id, confirm=True)
+
+# 底层客户端调用
 result = client.delete_task(task_id, current_status="running")
 print(result.status)
 ```
 
-工作流层默认支持确认回调：
+### 确认回调
 
 ```python
 from sd2video import WorkflowCallbacks, VideoGenerationWorkflow
 
 workflow = VideoGenerationWorkflow.from_env(
     callbacks=WorkflowCallbacks(
-        on_confirm_delete=lambda task_id, status: status in {"queued", "running"},
+        on_confirm_cancel=lambda task_id, status: True,   # 取消确认
+        on_confirm_delete=lambda task_id, status: True,    # 删除确认
     )
 )
-workflow.delete(task_id, confirm=True)
+workflow.cancel(task_id, confirm=True)  # queued/running 任务
+workflow.delete(task_id, confirm=True)  # 终态任务
 ```
 
-对空任务 ID、路径分隔符、未知本地状态、无权限、任务不存在、重复删除等情况会返回可读错误。
+### 成本保护
+
+高成本参数（1080p、≥10s 时长、多素材、生成音频）提交前触发 `on_confirm_submit` 回调：
+
+```python
+callbacks = WorkflowCallbacks(
+    on_confirm_submit=lambda params: (True, None),   # 确认继续
+    # on_confirm_submit=lambda params: (False, "太贵"),  # 取消提交
+)
+```
+
+### 防重复提交
+
+相同参数 5 秒内重复提交会抛出 `ArkParameterError`。并发提交通过 `_submitting` 锁防止。
+
+### 状态保护
+
+取消/删除 API 失败时，任务保持原状态不变。通过 `on_delete_error` 回调获取错误详情。
+
+对空任务 ID、路径分隔符、未知本地状态、无权限、任务不存在、重复删除等情况会返回可读错误。终态任务用 `delete()`，排队/生成中任务用 `cancel()`。
 
 ## 常见错误
 

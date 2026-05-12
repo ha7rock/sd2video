@@ -544,7 +544,7 @@ class WorkflowRunTests(unittest.TestCase):
 
 
 class WorkflowDeleteTests(unittest.TestCase):
-    def test_delete_with_confirmation(self) -> None:
+    def test_cancel_with_confirmation(self) -> None:
         transport = RecordingTransport(
             [
                 ArkHTTPResponse(200, {}, b'{"id":"cgt-d"}'),
@@ -562,17 +562,17 @@ class WorkflowDeleteTests(unittest.TestCase):
         wf = VideoGenerationWorkflow(
             client,
             callbacks=WorkflowCallbacks(
-                on_confirm_delete=lambda tid, status: (confirmed.append(True), True)[1],
+                on_confirm_cancel=lambda tid, status: (confirmed.append(True), True)[1],
             ),
         )
 
         state = wf.submit("Test")
-        result = wf.delete(state.task_id, confirm=True)
+        result = wf.cancel(state.task_id, confirm=True)
 
         self.assertEqual("cancelled", result.status)
         self.assertEqual([True], confirmed)
 
-    def test_delete_declined_by_user(self) -> None:
+    def test_cancel_declined_by_user(self) -> None:
         transport = RecordingTransport(
             [
                 ArkHTTPResponse(200, {}, b'{"id":"cgt-dd"}'),
@@ -582,19 +582,19 @@ class WorkflowDeleteTests(unittest.TestCase):
         wf = VideoGenerationWorkflow(
             client,
             callbacks=WorkflowCallbacks(
-                on_confirm_delete=lambda tid, status: False,
+                on_confirm_cancel=lambda tid, status: False,
             ),
         )
 
         state = wf.submit("Test")
-        result = wf.delete(state.task_id, confirm=True)
+        result = wf.cancel(state.task_id, confirm=True)
 
         # Status should still be queued (delete was not sent)
         self.assertEqual("queued", result.status)
         # Only 1 request (the create), not 2
         self.assertEqual(1, len(transport.requests))
 
-    def test_delete_without_confirmation(self) -> None:
+    def test_cancel_without_confirmation(self) -> None:
         transport = RecordingTransport(
             [
                 ArkHTTPResponse(200, {}, b'{"id":"cgt-nc"}'),
@@ -606,9 +606,52 @@ class WorkflowDeleteTests(unittest.TestCase):
         wf = VideoGenerationWorkflow(client)
 
         state = wf.submit("Test")
-        result = wf.delete(state.task_id, confirm=False)
+        result = wf.cancel(state.task_id, confirm=False)
 
         self.assertEqual("deleted", result.status)
+
+    def test_delete_on_terminal_task(self) -> None:
+        """Delete works on a task that already reached a terminal state."""
+        transport = RecordingTransport(
+            [
+                ArkHTTPResponse(200, {}, b'{"id":"cgt-del-term"}'),
+                # First poll: succeeded
+                ArkHTTPResponse(200, {}, json.dumps({
+                    "data": {"id": "cgt-del-term", "status": "succeeded", "content": []}
+                }).encode()),
+                # delete request
+                ArkHTTPResponse(200, {}, b"{}"),
+                # refresh after delete
+                ArkHTTPResponse(404, {}, b'{"error":{"code":"NotFound"}}'),
+            ]
+        )
+        client = _make_client(transport)
+        wf = VideoGenerationWorkflow(
+            client,
+            config=WorkflowConfig(poll_interval_seconds=0.01),
+        )
+
+        state = wf.submit("Test")
+        result = wf.wait(state.task_id)
+        self.assertEqual("succeeded", result.status)
+
+        # Now delete the succeeded task
+        del_result = wf.delete(result.task_id, confirm=False)
+        self.assertEqual("deleted", del_result.status)
+
+    def test_delete_rejects_pending_task(self) -> None:
+        """Delete raises on a pending task (use cancel instead)."""
+        transport = RecordingTransport(
+            ArkHTTPResponse(200, {}, b'{"id":"cgt-rej"}')
+        )
+        client = _make_client(transport)
+        wf = VideoGenerationWorkflow(client)
+
+        state = wf.submit("Test")
+        self.assertEqual("queued", state.status)
+
+        with self.assertRaises(ArkParameterError):
+            wf.delete(state.task_id, confirm=False)
 
 
 class WorkflowListTests(unittest.TestCase):
@@ -645,6 +688,265 @@ class WorkflowFromEnvTests(unittest.TestCase):
                 os.environ.pop("ARK_API_KEY", None)
             else:
                 os.environ["ARK_API_KEY"] = old_key
+
+
+
+# ---------------------------------------------------------------------------
+# Cancel task tests (HOM-29)
+# ---------------------------------------------------------------------------
+
+
+class WorkflowCancelTests(unittest.TestCase):
+    def test_cancel_queued_task(self) -> None:
+        transport = RecordingTransport(
+            [
+                ArkHTTPResponse(200, {}, b'{"id":"cgt-cq"}'),
+                ArkHTTPResponse(200, {}, b"{}"),
+                ArkHTTPResponse(200, {}, json.dumps({
+                    "data": {"id": "cgt-cq", "status": "cancelled"}
+                }).encode()),
+            ]
+        )
+        client = _make_client(transport)
+        wf = VideoGenerationWorkflow(client)
+
+        state = wf.submit("Test")
+        result = wf.cancel(state.task_id, confirm=False)
+        self.assertEqual("cancelled", result.status)
+
+    def test_cancel_running_task(self) -> None:
+        transport = RecordingTransport(
+            [
+                ArkHTTPResponse(200, {}, b'{"id":"cgt-cr"}'),
+                # poll: running
+                ArkHTTPResponse(200, {}, json.dumps({
+                    "data": {"id": "cgt-cr", "status": "running"}
+                }).encode()),
+                # cancel delete
+                ArkHTTPResponse(200, {}, b"{}"),
+                # refresh
+                ArkHTTPResponse(200, {}, json.dumps({
+                    "data": {"id": "cgt-cr", "status": "cancelled"}
+                }).encode()),
+            ]
+        )
+        client = _make_client(transport)
+        wf = VideoGenerationWorkflow(
+            client,
+            config=WorkflowConfig(poll_interval_seconds=0.01),
+        )
+
+        state = wf.submit("Test")
+        state = wf.refresh(state.task_id)
+        self.assertEqual("running", state.status)
+
+        result = wf.cancel(state.task_id, confirm=False)
+        self.assertEqual("cancelled", result.status)
+
+    def test_cancel_rejected_on_terminal_task(self) -> None:
+        """Cancel raises on a succeeded task."""
+        transport = RecordingTransport(
+            [
+                ArkHTTPResponse(200, {}, b'{"id":"cgt-ct"}'),
+                ArkHTTPResponse(200, {}, json.dumps({
+                    "data": {"id": "cgt-ct", "status": "succeeded", "content": []}
+                }).encode()),
+            ]
+        )
+        client = _make_client(transport)
+        wf = VideoGenerationWorkflow(
+            client,
+            config=WorkflowConfig(poll_interval_seconds=0.01),
+        )
+
+        state = wf.submit("Test")
+        state = wf.wait(state.task_id)
+        self.assertEqual("succeeded", state.status)
+
+        with self.assertRaises(ArkParameterError) as ctx:
+            wf.cancel(state.task_id, confirm=False)
+        self.assertIn("succeeded", str(ctx.exception))
+
+    def test_cancel_error_preserves_state(self) -> None:
+        """When cancel API fails, original state is preserved and error fires."""
+        from sd2video.ark.errors import ArkTaskDeleteError
+
+        transport = RecordingTransport(
+            [
+                ArkHTTPResponse(200, {}, b'{"id":"cgt-ce"}'),
+                # cancel fails
+                ArkHTTPResponse(
+                    409,
+                    {},
+                    b'{"error":{"code":"Conflict","message":"cannot cancel"}}',
+                ),
+            ]
+        )
+        client = _make_client(transport)
+
+        errors = []
+        wf = VideoGenerationWorkflow(
+            client,
+            callbacks=WorkflowCallbacks(
+                on_delete_error=lambda tid, exc: errors.append((tid, exc)),
+            ),
+        )
+
+        state = wf.submit("Test")
+        self.assertEqual("queued", state.status)
+
+        with self.assertRaises(ArkTaskDeleteError):
+            wf.cancel(state.task_id, confirm=False)
+
+        # Original state preserved
+        self.assertEqual("queued", state.status)
+        self.assertEqual(1, len(errors))
+        self.assertEqual("cgt-ce", errors[0][0])
+
+
+# ---------------------------------------------------------------------------
+# Cost protection tests (HOM-29)
+# ---------------------------------------------------------------------------
+
+
+class CostProtectionTests(unittest.TestCase):
+    def test_no_warning_for_basic_params(self) -> None:
+        """Basic params should produce no cost warning."""
+        warning = VideoGenerationWorkflow._check_cost({
+            "prompt": "A cat",
+            "resolution": "480p",
+            "duration": 4,
+        })
+        self.assertIsNone(warning)
+
+    def test_warning_for_1080p(self) -> None:
+        warning = VideoGenerationWorkflow._check_cost({
+            "resolution": "1080p",
+        })
+        self.assertIsNotNone(warning)
+        self.assertIn("1080p", warning)
+
+    def test_warning_for_long_duration(self) -> None:
+        warning = VideoGenerationWorkflow._check_cost({
+            "duration": 15,
+        })
+        self.assertIsNotNone(warning)
+        self.assertIn("15s", warning)
+
+    def test_warning_for_audio_generation(self) -> None:
+        warning = VideoGenerationWorkflow._check_cost({
+            "generate_audio": True,
+        })
+        self.assertIsNotNone(warning)
+        self.assertIn("音频", warning)
+
+    def test_warning_for_multiple_materials(self) -> None:
+        warning = VideoGenerationWorkflow._check_cost({
+            "image_url": "https://example.com/start.png",
+            "last_frame_url": "https://example.com/end.png",
+        })
+        self.assertIsNotNone(warning)
+        self.assertIn("2", warning)
+
+    def test_combined_warnings(self) -> None:
+        """Multiple expensive params produce combined warning."""
+        warning = VideoGenerationWorkflow._check_cost({
+            "resolution": "1080p",
+            "duration": 12,
+            "generate_audio": True,
+        })
+        self.assertIsNotNone(warning)
+        self.assertIn("1080p", warning)
+        self.assertIn("12s", warning)
+        self.assertIn("音频", warning)
+
+    def test_submit_blocks_when_cost_declined(self) -> None:
+        transport = RecordingTransport(
+            ArkHTTPResponse(200, {}, b'{"id":"cgt-cost"}')
+        )
+        client = _make_client(transport)
+        wf = VideoGenerationWorkflow(
+            client,
+            callbacks=WorkflowCallbacks(
+                on_confirm_submit=lambda params: (False, "too expensive"),
+            ),
+        )
+
+        with self.assertRaises(ArkParameterError) as ctx:
+            wf.submit("A cat", resolution="1080p", duration=12)
+        self.assertIn("cost", str(ctx.exception).lower())
+        # No request was sent
+        self.assertEqual(0, len(transport.requests))
+
+    def test_submit_proceeds_when_cost_accepted(self) -> None:
+        transport = RecordingTransport(
+            ArkHTTPResponse(200, {}, b'{"id":"cgt-cost-ok"}')
+        )
+        client = _make_client(transport)
+        wf = VideoGenerationWorkflow(
+            client,
+            callbacks=WorkflowCallbacks(
+                on_confirm_submit=lambda params: (True, None),
+            ),
+        )
+
+        state = wf.submit("A cat", resolution="1080p", duration=12)
+        self.assertEqual("cgt-cost-ok", state.task_id)
+        self.assertEqual(1, len(transport.requests))
+
+
+# ---------------------------------------------------------------------------
+# Duplicate submission tests (HOM-29)
+# ---------------------------------------------------------------------------
+
+
+class DuplicateSubmissionTests(unittest.TestCase):
+    def test_duplicate_raises_within_window(self) -> None:
+        transport = RecordingTransport(
+            ArkHTTPResponse(200, {}, b'{"id":"cgt-dup"}')
+        )
+        client = _make_client(transport)
+        wf = VideoGenerationWorkflow(client)
+
+        state1 = wf.submit("A cat", ratio="16:9")
+        self.assertEqual("cgt-dup", state1.task_id)
+
+        # Second identical submit within window should raise
+        with self.assertRaises(ArkParameterError) as ctx:
+            wf.submit("A cat", ratio="16:9")
+        self.assertIn("重复", str(ctx.exception))
+
+        # Only one request was sent
+        self.assertEqual(1, len(transport.requests))
+
+    def test_different_params_not_duplicate(self) -> None:
+        transport = RecordingTransport(
+            ArkHTTPResponse(200, {}, b'{"id":"cgt-d1"}')
+        )
+        client = _make_client(transport)
+        wf = VideoGenerationWorkflow(client)
+
+        wf.submit("A cat", ratio="16:9")
+
+        # Different prompt is not a duplicate
+        transport2 = RecordingTransport(
+            ArkHTTPResponse(200, {}, b'{"id":"cgt-d2"}')
+        )
+        wf._client = ArkClient(
+            ArkConfig(api_key="test-key", default_model_id="doubao-seedance-2-0-fast-260128"),
+            transport=transport2,
+        )
+        state2 = wf.submit("A dog", ratio="16:9")
+        self.assertEqual("cgt-d2", state2.task_id)
+
+    def test_concurrent_submit_guard(self) -> None:
+        """Submitting while another submit is in progress raises."""
+        wf = VideoGenerationWorkflow(_make_client(RecordingTransport()))
+        wf._submitting = True
+
+        with self.assertRaises(ArkParameterError) as ctx:
+            wf.submit("Test")
+        self.assertIn("already in progress", str(ctx.exception))
 
 
 if __name__ == "__main__":

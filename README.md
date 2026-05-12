@@ -108,12 +108,34 @@ for task in result.items:
 ### 取消/删除任务
 
 ```python
-# 有确认步骤的删除
-state = wf.delete(task_id, confirm=True)
+# 取消排队/生成中的任务（有确认步骤）
+state = wf.cancel(task_id, confirm=True)
 
-# 跳过确认
-state = wf.delete(task_id, confirm=False)
+# 取消跳过确认
+state = wf.cancel(task_id, confirm=False)
+
+# 删除已完成/失败的历史任务
+state = wf.delete(task_id, confirm=True)
 ```
+
+### 成本保护
+
+高成本参数（1080p、长时长、多素材、生成音频）提交前会触发 `on_confirm_submit` 回调：
+
+```python
+callbacks = WorkflowCallbacks(
+    on_confirm_submit=lambda params: (True, None),   # 确认继续
+    # on_confirm_submit=lambda params: (False, "太贵"),  # 取消提交
+)
+```
+
+### 防重复提交
+
+相同参数 5 秒内重复提交会抛出 `ArkParameterError`。并发提交通过 `_submitting` 锁防止。
+
+### 取消/删除失败时的状态保护
+
+取消或删除 API 失败时，任务保持原状态不变，通过 `on_delete_error` 回调报告错误。
 
 ## 状态说明
 

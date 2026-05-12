@@ -1,11 +1,12 @@
 """End-to-end video generation workflow for Ark.
 
-Ties together create → poll → get result → delete into a user-facing flow.
+Ties together create → poll → get result → cancel/delete into a user-facing flow.
 No API key is ever exposed in logs, errors, or UI output.
 """
 
 from __future__ import annotations
 
+import hashlib
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -19,6 +20,13 @@ from .types import (
     ArkTaskDetail,
     ArkTaskListResult,
 )
+
+# ---------------------------------------------------------------------------
+# Cost thresholds — tasks exceeding these are considered "expensive"
+# ---------------------------------------------------------------------------
+
+_COST_HIGH_DURATION_SECONDS = 10
+_COST_HIGH_RESOLUTION = "1080p"
 
 
 # ---------------------------------------------------------------------------
@@ -123,6 +131,10 @@ class WorkflowCallbacks:
     on_failed: Callable[[TaskState], None] | None = None
     on_cancelled: Callable[[TaskState], None] | None = None
     on_confirm_delete: Callable[[str, str], bool] | None = None  # (task_id, status) -> confirmed
+    on_confirm_cancel: Callable[[str, str], bool] | None = None  # (task_id, status) -> confirmed
+    on_confirm_submit: Callable[[dict[str, Any]], tuple[bool, str | None]] | None = None  # (params) -> (proceed, warning)
+    on_submit_error: Callable[[str, Exception], None] | None = None  # (task_id, error)
+    on_delete_error: Callable[[str, Exception], None] | None = None  # (task_id, error)
 
 
 # ---------------------------------------------------------------------------
@@ -146,6 +158,9 @@ class VideoGenerationWorkflow:
         self._config = config or WorkflowConfig()
         self._callbacks = callbacks or WorkflowCallbacks()
         self._tasks: dict[str, TaskState] = {}
+        self._submitting: bool = False
+        self._recent_submissions: list[tuple[float, str]] = []  # (timestamp, fingerprint)
+        self._duplicate_window_seconds: float = 5.0
 
     @classmethod
     def from_env(
@@ -201,7 +216,45 @@ class VideoGenerationWorkflow:
 
         Returns:
             A :class:`TaskState` tracking the submitted task.
+
+        Raises:
+            ArkParameterError: If a duplicate submission is detected.
         """
+        # Guard: prevent concurrent submissions
+        if self._submitting:
+            raise ArkParameterError(
+                "A submission is already in progress. Please wait for it to complete."
+            )
+
+        # Build params dict for cost check and fingerprinting
+        params: dict[str, Any] = {
+            "prompt": prompt,
+            "model": model or self._config.default_model or "",
+            "image_url": image_url,
+            "last_frame_url": last_frame_url,
+            "resolution": resolution,
+            "ratio": ratio,
+            "duration": duration,
+            "frames": frames,
+            "seed": seed,
+            "camera_fixed": camera_fixed,
+            "watermark": watermark,
+            "generate_audio": generate_audio,
+            "service_tier": service_tier,
+        }
+
+        # Check for duplicate submission
+        self._check_duplicate_submission(params)
+
+        # Cost confirmation
+        cost_warning = self._check_cost(params)
+        if cost_warning:
+            cb = self._callbacks.on_confirm_submit
+            if cb:
+                proceed, _warning = cb(params)
+                if not proceed:
+                    raise ArkParameterError("Submission cancelled by user due to cost warning.")
+
         effective_model = model or self._config.default_model or ""
 
         # Build request based on input type
@@ -236,7 +289,19 @@ class VideoGenerationWorkflow:
                 service_tier=service_tier,
             )
 
-        task_id = self._client.create_task(request)
+        self._submitting = True
+        try:
+            task_id = self._client.create_task(request)
+        except Exception as exc:
+            cb = self._callbacks.on_submit_error
+            if cb:
+                cb("", exc)
+            raise
+        finally:
+            self._submitting = False
+
+        # Record submission fingerprint for duplicate detection
+        self._record_submission(params)
 
         state = TaskState(
             task_id=task_id,
@@ -407,13 +472,63 @@ class VideoGenerationWorkflow:
     # Delete / cancel
     # ------------------------------------------------------------------
 
+    def cancel(
+        self,
+        task_id: str,
+        *,
+        confirm: bool = True,
+    ) -> TaskState:
+        """Cancel a pending (queued/running) video generation task.
+
+        Args:
+            task_id: The Ark task ID.
+            confirm: If True, calls on_confirm_cancel callback before proceeding.
+
+        Returns:
+            Updated :class:`TaskState` (status will be "cancelled").
+
+        Raises:
+            ArkParameterError: If the task is not in a cancellable state.
+        """
+        state = self._get_or_create_state(task_id)
+
+        if state.status not in {"queued", "running"}:
+            raise ArkParameterError(
+                f"Cannot cancel task {task_id!r}: status is {state.status!r}. "
+                "Only queued or running tasks can be cancelled."
+            )
+
+        if confirm:
+            cb = self._callbacks.on_confirm_cancel
+            if cb and not cb(task_id, state.status):
+                return state  # User declined
+
+        old_status = state.status
+        try:
+            result = self._client.delete_task(
+                task_id,
+                current_status=state.status,
+                refresh=True,
+            )
+        except ArkError as exc:
+            cb = self._callbacks.on_delete_error
+            if cb:
+                cb(task_id, exc)
+            raise
+
+        state.status = result.status
+        state.updated_at = None  # Will be refreshed
+
+        self._fire_terminal_callback(state)
+        return state
+
     def delete(
         self,
         task_id: str,
         *,
         confirm: bool = True,
     ) -> TaskState:
-        """Delete or cancel a video generation task.
+        """Delete a video generation task in a terminal state.
 
         Args:
             task_id: The Ark task ID.
@@ -421,19 +536,36 @@ class VideoGenerationWorkflow:
 
         Returns:
             Updated :class:`TaskState` (status will be "cancelled" or "deleted").
+
+        Raises:
+            ArkParameterError: If the task is still pending (use cancel() instead).
         """
         state = self._get_or_create_state(task_id)
+
+        # Warn if task is still pending — suggest cancel() instead
+        if state.status in {"queued", "running"}:
+            raise ArkParameterError(
+                f"Task {task_id!r} is still {state.status!r}. "
+                "Use cancel() to stop a running task, or delete(confirm=False) to force."
+            )
 
         if confirm:
             cb = self._callbacks.on_confirm_delete
             if cb and not cb(task_id, state.status):
                 return state  # User declined
 
-        result = self._client.delete_task(
-            task_id,
-            current_status=state.status,
-            refresh=True,
-        )
+        old_status = state.status
+        try:
+            result = self._client.delete_task(
+                task_id,
+                current_status=state.status,
+                refresh=True,
+            )
+        except ArkError as exc:
+            cb = self._callbacks.on_delete_error
+            if cb:
+                cb(task_id, exc)
+            raise
 
         state.status = result.status
         state.updated_at = None  # Will be refreshed
@@ -475,3 +607,71 @@ class VideoGenerationWorkflow:
             cb = self._callbacks.on_cancelled
             if cb:
                 cb(state)
+
+    # ------------------------------------------------------------------
+    # Cost protection
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _check_cost(params: dict[str, Any]) -> str | None:
+        """Return a warning message if the task is expensive, else None."""
+        warnings: list[str] = []
+
+        resolution = params.get("resolution")
+        if resolution == _COST_HIGH_RESOLUTION:
+            warnings.append(f"分辨率 {resolution} 会消耗更多算力")
+
+        duration = params.get("duration")
+        if duration is not None and isinstance(duration, int) and duration >= _COST_HIGH_DURATION_SECONDS:
+            warnings.append(f"时长 {duration}s 较长")
+
+        generate_audio = params.get("generate_audio")
+        if generate_audio is True:
+            warnings.append("生成音频会增加费用")
+
+        # Count material items (images + videos)
+        image_url = params.get("image_url")
+        last_frame_url = params.get("last_frame_url")
+        material_count = sum(1 for u in [image_url, last_frame_url] if u)
+        if material_count >= 2:
+            warnings.append(f"使用了 {material_count} 个素材")
+
+        return "; ".join(warnings) if warnings else None
+
+    # ------------------------------------------------------------------
+    # Duplicate submission detection
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _fingerprint(params: dict[str, Any]) -> str:
+        """Compute a stable fingerprint for a set of submission params."""
+        # Only include meaningful params, skip None values
+        parts = []
+        for key in sorted(params.keys()):
+            val = params[key]
+            if val is not None:
+                parts.append(f"{key}={val!r}")
+        raw = "|".join(parts)
+        return hashlib.md5(raw.encode("utf-8")).hexdigest()
+
+    def _check_duplicate_submission(self, params: dict[str, Any]) -> None:
+        """Raise if a matching submission was made within the duplicate window."""
+        now = time.monotonic()
+        fp = self._fingerprint(params)
+
+        # Prune stale entries
+        cutoff = now - self._duplicate_window_seconds
+        self._recent_submissions = [
+            (ts, f) for ts, f in self._recent_submissions if ts > cutoff
+        ]
+
+        for _ts, recent_fp in self._recent_submissions:
+            if recent_fp == fp:
+                raise ArkParameterError(
+                    "检测到重复提交：相同参数的任务刚刚已提交，请勿重复操作。"
+                )
+
+    def _record_submission(self, params: dict[str, Any]) -> None:
+        """Record a successful submission for duplicate detection."""
+        fp = self._fingerprint(params)
+        self._recent_submissions.append((time.monotonic(), fp))
