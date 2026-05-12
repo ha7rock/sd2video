@@ -38,8 +38,67 @@ function FieldLabel({ children }) {
   return <div style={{ fontSize:10, fontWeight:600, color:"#999", letterSpacing:"0.06em", textTransform:"uppercase", marginBottom:6 }}>{children}</div>;
 }
 
-function ImageSlot({ label, src, onUpload }) {
+function apiBase() {
+  const meta = document.querySelector('meta[name="sd2video-api-base"]')?.content;
+  return (window.__SD2VIDEO_API_BASE__ || meta || "").replace(/\/$/, "");
+}
+function previewAssetUrl(asset) {
+  if (!asset) return null;
+  return typeof asset === "string" ? asset : asset.previewUrl || asset.preview_url || asset.url || asset.asset_url || null;
+}
+function backendAssetUrl(asset) {
+  if (!asset) return null;
+  if (typeof asset === "string") return asset.startsWith("blob:") ? null : asset;
+  return asset.asset_url || asset.uploadUrl || asset.url || null;
+}
+function assetReady(asset) {
+  if (!asset) return false;
+  if (typeof asset === "string") return !asset.startsWith("blob:");
+  return asset.status === "ready" && !!backendAssetUrl(asset);
+}
+function uploadSingleAsset(file, role, setAsset) {
+  const draft = {
+    id: `asset-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    file,
+    name: file.name,
+    previewUrl: URL.createObjectURL(file),
+    status: "uploading",
+    progress: 1,
+    error: null
+  };
+  setAsset(draft);
+  const xhr = new XMLHttpRequest();
+  xhr.open("POST", `${apiBase()}/api/v1/assets`);
+  xhr.responseType = "json";
+  xhr.upload.onprogress = (event) => {
+    if (event.lengthComputable) {
+      setAsset(current => current?.id === draft.id ? { ...current, progress: Math.round(event.loaded / event.total * 100) } : current);
+    }
+  };
+  xhr.onload = () => {
+    if (xhr.status < 200 || xhr.status >= 300) {
+      const message = xhr.response?.error?.message || `上传失败 (${xhr.status})`;
+      setAsset(current => current?.id === draft.id ? { ...current, status:"error", error:message, progress:0 } : current);
+      return;
+    }
+    const body = xhr.response?.asset || xhr.response || {};
+    const url = body.asset_url || body.url;
+    setAsset(current => current?.id === draft.id ? { ...current, file:null, url, asset_url:url, preview_url:body.preview_url || current.previewUrl, status:url ? "ready" : "error", error:url ? null : "上传响应缺少 asset_url", progress:url ? 100 : 0 } : current);
+  };
+  xhr.onerror = () => setAsset(current => current?.id === draft.id ? { ...current, status:"error", error:"网络错误，上传失败", progress:0 } : current);
+  const form = new FormData();
+  form.append("file", file);
+  form.append("kind", "image");
+  form.append("role", role);
+  form.append("client_asset_id", draft.id);
+  xhr.send(form);
+}
+
+function ImageSlot({ label, asset, onUpload }) {
   const ref = React.useRef();
+  const src = previewAssetUrl(asset);
+  const uploading = asset && typeof asset !== "string" && asset.status === "uploading";
+  const failed = asset && typeof asset !== "string" && asset.status === "error";
   return (
     <div onClick={() => ref.current.click()} style={{
       flex:1, height:72, borderRadius:10, border:"1.5px dashed #ddd",
@@ -54,8 +113,10 @@ function ImageSlot({ label, src, onUpload }) {
             <span style={{ fontSize:9, color:"#bbb", fontWeight:600, letterSpacing:"0.05em", textTransform:"uppercase" }}>{label}</span>
           </>
       }
+      {uploading && <span style={{ position:"absolute", left:8, right:8, bottom:8, height:3, borderRadius:2, background:"rgba(255,255,255,.6)" }}><span style={{ display:"block", width:(asset.progress || 0) + "%", height:"100%", background:"#111", borderRadius:2 }} /></span>}
+      {failed && <button title={asset.error || "重试上传"} onClick={e => { e.stopPropagation(); if (asset.file) uploadSingleAsset(asset.file, label === "首帧" ? "first_frame" : "last_frame", onUpload); }} style={{ position:"absolute", right:6, bottom:6, width:22, height:22, borderRadius:11, border:"none", background:"rgba(0,0,0,.65)", color:"#fff", cursor:"pointer" }}>↻</button>}
       <input ref={ref} type="file" accept="image/*" style={{ display:"none" }}
-        onChange={e => { const f = e.target.files[0]; if (f) onUpload(URL.createObjectURL(f)); }} />
+        onChange={e => { const f = e.target.files[0]; if (f) uploadSingleAsset(f, label === "首帧" ? "first_frame" : "last_frame", onUpload); e.target.value = ""; }} />
     </div>
   );
 }
@@ -117,26 +178,27 @@ function CreateVideoPanel({ node, onClose, onGenerate, onNodeUpdate }) {
 
   const canGenerate =
     mode === "t2v" ? prompt.trim() :
-    mode === "first_frame" ? startImg :
-    mode === "first_last" ? startImg && endImg :
+    mode === "first_frame" ? assetReady(startImg) :
+    mode === "first_last" ? assetReady(startImg) && assetReady(endImg) :
     false;
 
   function handleGenerate() {
-    const content = [];
-    if (prompt.trim()) content.push({ type:"text", text:prompt.trim() });
-    if (mode === "first_frame" && startImg) content.push({ type:"image_url", image_url:{ url:startImg }, role:"first_frame" });
-    if (mode === "first_last") {
-      if (startImg) content.push({ type:"image_url", image_url:{ url:startImg }, role:"first_frame" });
-      if (endImg) content.push({ type:"image_url", image_url:{ url:endImg }, role:"last_frame" });
-    }
     onGenerate({
-      mode, model, prompt, negPrompt, ar, ratio:ar, resolution,
-      duration: parseInt(duration), startImg, endImg,
-      seed: seed || null, watermark, cameraCtrl, camera_fixed:cameraCtrl,
-      generateAudio, generate_audio:generateAudio,
-      returnLastFrame, return_last_frame:returnLastFrame,
-      tools: webSearch ? [{ type:"web_search" }] : [],
-      content,
+      mode, model, prompt:prompt.trim(), ar, ratio:ar, resolution,
+      duration: parseInt(duration),
+      assets: {
+        first_frame: mode === "first_frame" || mode === "first_last" ? backendAssetUrl(startImg) : null,
+        last_frame: mode === "first_last" ? backendAssetUrl(endImg) : null,
+        reference_images: [],
+        reference_videos: [],
+        reference_audios: [],
+        edit_video: null
+      },
+      startImg: previewAssetUrl(startImg), endImg: previewAssetUrl(endImg),
+      seed: seed || null, watermark, camera_fixed:cameraCtrl,
+      generate_audio:generateAudio, return_last_frame:returnLastFrame,
+      web_search: mode === "t2v" ? webSearch : false,
+      client_request_id: `panel-${Date.now()}-${Math.random().toString(16).slice(2)}`,
       modelLabel: selectedModel?.label || "Seedance",
     });
   }
@@ -212,8 +274,8 @@ function CreateVideoPanel({ node, onClose, onGenerate, onNodeUpdate }) {
           <div>
             <FieldLabel>参考帧</FieldLabel>
             <div style={{ display:"flex", gap:8 }}>
-              <ImageSlot label="首帧" src={startImg} onUpload={setStartImg} />
-              {mode === "first_last" && <ImageSlot label="尾帧" src={endImg} onUpload={setEndImg} />}
+              <ImageSlot label="首帧" asset={startImg} onUpload={setStartImg} />
+              {mode === "first_last" && <ImageSlot label="尾帧" asset={endImg} onUpload={setEndImg} />}
             </div>
           </div>
         )}

@@ -127,19 +127,127 @@ function Toggle({ on, onChange }) {
 
 }
 
+function apiBase() {
+  const meta = document.querySelector('meta[name="sd2video-api-base"]')?.content;
+  return (window.__SD2VIDEO_API_BASE__ || meta || "").replace(/\/$/, "");
+}
+function backendAssetUrl(asset) {
+  if (!asset) return null;
+  if (typeof asset === "string") return asset.startsWith("blob:") ? null : asset;
+  return asset.asset_url || asset.uploadUrl || asset.url || null;
+}
+function previewAssetUrl(asset) {
+  if (!asset) return null;
+  return typeof asset === "string" ? asset : asset.previewUrl || asset.preview_url || asset.url || asset.asset_url || null;
+}
+function assetReady(asset) {
+  if (!asset) return false;
+  if (typeof asset === "string") return !asset.startsWith("blob:");
+  return asset.status === "ready" && !!backendAssetUrl(asset);
+}
+function assetBusy(asset) {
+  return !!asset && typeof asset !== "string" && asset.status === "uploading";
+}
+function assetFailed(asset) {
+  return !!asset && typeof asset !== "string" && asset.status === "error";
+}
+function makeAssetDraft(file, kind, role) {
+  return {
+    id: `asset-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    file,
+    name: file.name,
+    kind,
+    role,
+    url: null,
+    previewUrl: URL.createObjectURL(file),
+    status: "queued",
+    progress: 0,
+    error: null
+  };
+}
+function normalizeAssetResponse(data, fallback) {
+  const body = data?.asset || data || {};
+  const url = body.asset_url || body.url;
+  if (!url) throw new Error("上传响应缺少 asset_url");
+  return {
+    ...fallback,
+    file: null,
+    url,
+    asset_url: url,
+    preview_url: body.preview_url || fallback.previewUrl,
+    size_bytes: body.size_bytes,
+    width: body.width,
+    height: body.height,
+    duration_seconds: body.duration_seconds,
+    status: "ready",
+    progress: 100,
+    error: null
+  };
+}
+function uploadAsset(draft, patch) {
+  patch({ status: "uploading", progress: 1, error: null });
+  const xhr = new XMLHttpRequest();
+  xhr.open("POST", `${apiBase()}/api/v1/assets`);
+  xhr.responseType = "json";
+  xhr.upload.onprogress = (event) => {
+    if (event.lengthComputable) patch({ progress: Math.max(1, Math.round(event.loaded / event.total * 100)) });
+  };
+  xhr.onload = () => {
+    const ok = xhr.status >= 200 && xhr.status < 300;
+    if (!ok) {
+      const message = xhr.response?.error?.message || `上传失败 (${xhr.status})`;
+      patch({ status: "error", error: message, progress: 0 });
+      return;
+    }
+    try {
+      patch(normalizeAssetResponse(xhr.response, draft));
+    } catch (err) {
+      patch({ status: "error", error: err.message || "上传响应无效", progress: 0 });
+    }
+  };
+  xhr.onerror = () => patch({ status: "error", error: "网络错误，上传失败", progress: 0 });
+  const form = new FormData();
+  form.append("file", draft.file);
+  form.append("kind", draft.kind);
+  if (draft.role) form.append("role", draft.role);
+  form.append("client_asset_id", draft.id);
+  xhr.send(form);
+}
+function uploadSingleAsset(file, kind, role, setAsset) {
+  const draft = makeAssetDraft(file, kind, role);
+  setAsset(draft);
+  uploadAsset(draft, (patch) => setAsset((current) => current?.id === draft.id ? { ...current, ...patch } : current));
+}
+function retrySingleAsset(asset, setAsset) {
+  if (!asset?.file) return;
+  uploadAsset(asset, (patch) => setAsset((current) => current?.id === asset.id ? { ...current, ...patch } : current));
+}
+function patchAssetList(setter, id, patch) {
+  setter((items) => (items || []).map((item) => item.id === id ? { ...item, ...patch } : item));
+}
+function assetUrls(items) {
+  return (items || []).map(backendAssetUrl).filter(Boolean);
+}
+
 function MediaPicker({ label, accept, kind, items, onChange, max = 1 }) {
   const ref = React.useRef();
   const list = items || [];
   function add(files) {
-    const next = [...list];
+    const drafts = [];
     for (const f of Array.from(files || [])) {
-      if (next.length >= max) break;
-      next.push({ url: URL.createObjectURL(f), name: f.name, kind });
+      if (list.length + drafts.length >= max) break;
+      drafts.push(makeAssetDraft(f, kind, kind === "image" ? "reference_image" : kind === "video" ? "reference_video" : "reference_audio"));
     }
-    onChange(next);
+    if (!drafts.length) return;
+    onChange((current) => [...(current || []), ...drafts]);
+    drafts.forEach((draft) => uploadAsset(draft, (patch) => patchAssetList(onChange, draft.id, patch)));
   }
   function remove(i) {
     onChange(list.filter((_, idx) => idx !== i));
+  }
+  function retry(item) {
+    if (!item.file) return;
+    uploadAsset(item, (patch) => patchAssetList(onChange, item.id, patch));
   }
   return (
     <div>
@@ -150,12 +258,14 @@ function MediaPicker({ label, accept, kind, items, onChange, max = 1 }) {
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
         {list.map((it, i) =>
         <div key={it.url + i} className="asset-chip">
-          {kind === "image" && <img src={it.url} />}
-          {kind === "video" && <video src={it.url} muted />}
+          {kind === "image" && <img src={previewAssetUrl(it)} />}
+          {kind === "video" && <video src={previewAssetUrl(it)} muted />}
           {kind === "audio" && <div className="audio-chip">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3v10.5A4 4 0 1 1 10 10V5h10v3H12z" /></svg>
           </div>}
-          <span>{kind === "image" ? "图片" : kind === "video" ? "视频" : "音频"}{i + 1}</span>
+          {assetBusy(it) && <span>{it.progress || 0}%</span>}
+          {!assetBusy(it) && <span>{assetFailed(it) ? "失败" : kind === "image" ? "图片" : kind === "video" ? "视频" : "音频"}{!assetFailed(it) ? i + 1 : ""}</span>}
+          {assetFailed(it) && <button title={it.error || "重试上传"} onClick={(e) => {e.stopPropagation();retry(it);}}>↻</button>}
           <button onClick={(e) => {e.stopPropagation();remove(i);}}>×</button>
         </div>
         )}
@@ -169,30 +279,6 @@ function MediaPicker({ label, accept, kind, items, onChange, max = 1 }) {
       onChange={(e) => {add(e.target.files);e.target.value = "";}} />
     </div>
   );
-}
-
-function buildContent({ mode, prompt, startImg, endImg, refImages, refVideos, refAudios, editVideo }) {
-  const content = [];
-  if (prompt.trim()) content.push({ type: "text", text: prompt.trim() });
-  if (mode === "first_frame" && startImg) content.push({ type: "image_url", image_url: { url: startImg }, role: "first_frame" });
-  if (mode === "first_last") {
-    if (startImg) content.push({ type: "image_url", image_url: { url: startImg }, role: "first_frame" });
-    if (endImg) content.push({ type: "image_url", image_url: { url: endImg }, role: "last_frame" });
-  }
-  if (mode === "reference") {
-    refImages.forEach((it) => content.push({ type: "image_url", image_url: { url: it.url }, role: "reference_image" }));
-    refVideos.forEach((it) => content.push({ type: "video_url", video_url: { url: it.url }, role: "reference_video" }));
-    refAudios.forEach((it) => content.push({ type: "audio_url", audio_url: { url: it.url }, role: "reference_audio" }));
-  }
-  if (mode === "edit") {
-    editVideo.forEach((it) => content.push({ type: "video_url", video_url: { url: it.url }, role: "reference_video" }));
-    refImages.forEach((it) => content.push({ type: "image_url", image_url: { url: it.url }, role: "reference_image" }));
-    refAudios.forEach((it) => content.push({ type: "audio_url", audio_url: { url: it.url }, role: "reference_audio" }));
-  }
-  if (mode === "extend") {
-    refVideos.forEach((it) => content.push({ type: "video_url", video_url: { url: it.url }, role: "reference_video" }));
-  }
-  return content;
 }
 
 const PANEL_POS_KEY = "sd2video:create-panel-position";
@@ -224,7 +310,7 @@ function savePanelPos(pos) {
 
 // ── CreatePanel ──────────────────────────────────────────────────────
 function CreatePanel({ node, onClose, onGenerate }) {
-  const { useState: us, useRef: ur, useEffect: ue, useMemo: um } = React;
+  const { useState: us, useRef: ur, useEffect: ue } = React;
   const [mode, setMode] = us(node?.mode || "t2v");
   const [model, setModel] = us(node?.model || MODELS[0].id);
   const [prompt, setPrompt] = us(node?.prompt || "");
@@ -253,28 +339,38 @@ function CreatePanel({ node, onClose, onGenerate }) {
 
   ue(() => {if (isFast && res === "1080p") setRes("720p");}, [isFast, res]);
 
-  const content = um(() => buildContent({ mode, prompt, startImg, endImg, refImages, refVideos, refAudios, editVideo }),
-  [mode, prompt, startImg, endImg, refImages, refVideos, refAudios, editVideo]);
   const hasPrompt = !!prompt.trim();
-  const hasVisualRef = refImages.length > 0 || refVideos.length > 0;
+  const hasVisualRef = refImages.some(assetReady) || refVideos.some(assetReady);
+  const assetsUploading = [startImg, endImg, ...refImages, ...refVideos, ...refAudios, ...editVideo].some(assetBusy);
+  const assetsFailed = [startImg, endImg, ...refImages, ...refVideos, ...refAudios, ...editVideo].some(assetFailed);
   const ok =
     mode === "t2v" ? hasPrompt :
-    mode === "first_frame" ? !!startImg :
-    mode === "first_last" ? !!startImg && !!endImg :
+    mode === "first_frame" ? assetReady(startImg) :
+    mode === "first_last" ? assetReady(startImg) && assetReady(endImg) :
     mode === "reference" ? hasPrompt && hasVisualRef :
-    mode === "edit" ? hasPrompt && editVideo.length === 1 :
-    mode === "extend" ? hasPrompt && refVideos.length > 0 :
+    mode === "edit" ? hasPrompt && editVideo.length === 1 && editVideo.every(assetReady) :
+    mode === "extend" ? hasPrompt && refVideos.length > 0 && refVideos.every(assetReady) :
     false;
 
   function go() {
+    const assets = {
+      first_frame: mode === "first_frame" || mode === "first_last" ? backendAssetUrl(startImg) : null,
+      last_frame: mode === "first_last" ? backendAssetUrl(endImg) : null,
+      reference_images: assetUrls(refImages),
+      reference_videos: assetUrls(refVideos),
+      reference_audios: assetUrls(refAudios),
+      edit_video: backendAssetUrl(editVideo[0]) || null
+    };
     onGenerate({
-      mode, model, prompt, neg, ar, ratio: ar, resolution: res, duration: dur,
-      startImg, endImg, refImages, refVideos, refAudios, editVideo,
-      seed: seed || null, watermark, fixedCam, camera_fixed: fixedCam,
-      generateAudio, generate_audio: generateAudio,
-      returnLastFrame, return_last_frame: returnLastFrame,
-      webSearch, tools: webSearch ? [{ type: "web_search" }] : [],
-      content,
+      mode, model, prompt: prompt.trim(), ar, ratio: ar, resolution: res, duration: dur,
+      assets, seed: seed || null, watermark, camera_fixed: fixedCam,
+      generate_audio: generateAudio, return_last_frame: returnLastFrame,
+      web_search: mode === "t2v" ? webSearch : false,
+      client_request_id: `panel-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      asset_previews: { startImg, endImg, refImages, refVideos, refAudios, editVideo },
+      startImg: previewAssetUrl(startImg), endImg: previewAssetUrl(endImg),
+      refImages, refVideos, refAudios, editVideo,
+      fixedCam, generateAudio, returnLastFrame, webSearch: mode === "t2v" ? webSearch : false,
       modelLabel: selectedModel.label
     });
   }
@@ -331,12 +427,14 @@ function CreatePanel({ node, onClose, onGenerate }) {
           <div style={{ display: "flex", gap: 8 }}>
               {[[startImg, setStart, sRef, "首帧"], ...(mode === "first_last" ? [[endImg, setEnd, eRef, "尾帧"]] : [])].map(([src, set, ref, lbl]) =>
             <div key={lbl} className="imgslot" onClick={() => ref.current?.click()}>
-                    {src ? <img src={src} /> : <>
+                    {src ? <img src={previewAssetUrl(src)} /> : <>
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#ccc" strokeWidth="1.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12" /></svg>
                       <span style={{ fontSize: 9, color: "#bbb", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>{lbl}</span>
                     </>}
+                    {assetBusy(src) && <span style={{ position: "absolute", left: 6, right: 6, bottom: 6, height: 3, borderRadius: 2, background: "rgba(255,255,255,.5)" }}><span style={{ display: "block", height: "100%", width: (src.progress || 0) + "%", background: "#111", borderRadius: 2 }} /></span>}
+                    {assetFailed(src) && <button title={src.error || "重试上传"} onClick={(e) => {e.stopPropagation();retrySingleAsset(src, set);}} style={{ position: "absolute", right: 5, bottom: 5, width: 22, height: 22, borderRadius: 11, border: "none", background: "rgba(0,0,0,.65)", color: "#fff", cursor: "pointer" }}>↻</button>}
                     <input ref={ref} type="file" accept="image/*" style={{ display: "none" }}
-              onChange={(e) => {const f = e.target.files[0];if (f) set(URL.createObjectURL(f));}} />
+              onChange={(e) => {const f = e.target.files[0];if (f) uploadSingleAsset(f, "image", lbl === "首帧" ? "first_frame" : "last_frame", set);e.target.value = "";}} />
                   </div>
             )}
               </div>
@@ -439,6 +537,7 @@ function CreatePanel({ node, onClose, onGenerate }) {
 
       </div>
       <div className="panel-footer">
+        {(assetsUploading || assetsFailed) && <div style={{ fontSize: 10.5, color: assetsFailed ? "#b45309" : "#888", textAlign: "center", marginBottom: 7 }}>{assetsFailed ? "素材上传失败，请重试或删除后替换" : "素材上传中"}</div>}
         <button onClick={go} disabled={!ok} className={"btn-gen" + (ok ? " ok" : " no")}>
           <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 17l-6.2 4.3 2.4-7.4L2 9.4h7.6z" /></svg>
           生成视频
@@ -459,10 +558,10 @@ function DetailPanel({ node, onClose, onPreview, onDownload, onRegen, onDelete }
   const refs = [];
   if (node.startImg) refs.push({ src: node.startImg, label: "首帧", kind: "image" });
   if (node.endImg) refs.push({ src: node.endImg, label: "尾帧", kind: "image" });
-  if (node.editVideo) node.editVideo.forEach((r, i) => refs.push({ src: r.url, label: "编辑视频" + (i + 1), kind: "video" }));
-  if (node.refImages) node.refImages.forEach((r, i) => refs.push({ src: r.url, label: "图片" + (i + 1), kind: "image" }));
-  if (node.refVideos) node.refVideos.forEach((r, i) => refs.push({ src: r.url, label: "视频" + (i + 1), kind: "video" }));
-  if (node.refAudios) node.refAudios.forEach((r, i) => refs.push({ src: r.url, label: "音频" + (i + 1), kind: "audio" }));
+  if (node.editVideo) node.editVideo.forEach((r, i) => refs.push({ src: previewAssetUrl(r), label: "编辑视频" + (i + 1), kind: "video" }));
+  if (node.refImages) node.refImages.forEach((r, i) => refs.push({ src: previewAssetUrl(r), label: "图片" + (i + 1), kind: "image" }));
+  if (node.refVideos) node.refVideos.forEach((r, i) => refs.push({ src: previewAssetUrl(r), label: "视频" + (i + 1), kind: "video" }));
+  if (node.refAudios) node.refAudios.forEach((r, i) => refs.push({ src: previewAssetUrl(r), label: "音频" + (i + 1), kind: "audio" }));
 
   return (
     <div className="panel">
