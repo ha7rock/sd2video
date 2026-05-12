@@ -40,7 +40,8 @@ function VNode({ node, sel, zoom, onClickNode, onMove, onAction }) {
     window.addEventListener("mouseup", up);
   }
 
-  const sc = { idle: "#ccc", generating: "#f59e0b", done: "#22c55e", error: "#ef4444" }[node.status] || "#ccc";
+  const videoUrl = node.video_url || node.videoUrl;
+  const sc = { idle: "#ccc", generating: "#f59e0b", done: "#22c55e", error: "#ef4444", cancelled: "#8b8b8b" }[node.status] || "#ccc";
   const tbBtn = (icon, label, act, disabled) =>
   <button className="ntb-btn" title={label} disabled={disabled}
   onClick={(e) => {e.stopPropagation();if (!disabled) onAction(act);}}
@@ -55,8 +56,8 @@ function VNode({ node, sel, zoom, onClickNode, onMove, onAction }) {
     onDoubleClick={(e) => {e.stopPropagation();onClickNode(node.id, true);}}>
       {sel &&
       <div className="ntb" onMouseDown={(e) => e.stopPropagation()}>
-          {tbBtn(<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>, "预览", "preview", node.status !== "done")}
-          {tbBtn(<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>, "下载", "download", node.status !== "done")}
+          {tbBtn(<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>, "预览", "preview", node.status !== "done" || !videoUrl)}
+          {tbBtn(<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>, "下载", "download", node.status !== "done" || !videoUrl)}
           {tbBtn(<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10" /><line x1="12" y1="16" x2="12" y2="12" /><line x1="12" y1="8" x2="12.01" y2="8" /></svg>, "信息", "info")}
           <div className="ntb-sep" />
           {tbBtn(<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6" /><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" /><path d="M10 11v6M14 11v6" /><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>, "从画布删除", "delete")}
@@ -81,13 +82,15 @@ function VNode({ node, sel, zoom, onClickNode, onMove, onAction }) {
           </div>
         }
         {node.status === "done" &&
-        <div style={{ position: "absolute", inset: 0, background: "linear-gradient(135deg,#1a1a2e,#16213e,#0f3460)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <div style={{ position: "absolute", inset: 0, background: "#111", display: "flex", alignItems: "center", justifyContent: "center" }}>
+            {videoUrl && <video src={videoUrl} muted playsInline preload="metadata" style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }} />}
             <div style={{ width: Math.min(40, h * 0.3), height: Math.min(40, h * 0.3), borderRadius: "50%", background: "rgba(255,255,255,0.18)", backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center" }}>
               <svg width={Math.min(18, h * 0.14)} height={Math.min(18, h * 0.14)} viewBox="0 0 24 24" fill="white"><path d="M8 5v14l11-7z" /></svg>
             </div>
           </div>
         }
-        {node.status === "error" && <span style={{ fontSize: 11, color: "#ef4444" }}>生成失败</span>}
+        {node.status === "error" && <span style={{ fontSize: 11, color: "#ef4444", padding: "0 12px", textAlign: "center" }}>{node.statusText || node.error_message || node.errorMessage || "生成失败"}</span>}
+        {node.status === "cancelled" && <span style={{ fontSize: 11, color: "#666" }}>{node.statusText || "已取消"}</span>}
         <div style={{ position: "absolute", top: 7, right: 7, width: 6, height: 6, borderRadius: 3, background: sc }} />
         {sel && <>
           <div className="sel-dot" style={{ top: -4, left: -4 }} />
@@ -259,7 +262,7 @@ function formatCreateError(error) {
   return error?.message || "创建任务失败，请稍后重试";
 }
 
-async function createVideoTask(payload, config = readBackendConfig()) {
+async function createVideoTask(payload, config = readBackendConfig(), options = {}) {
   const res = await fetch(createEndpoint(config), {
     method: "POST",
     headers: {
@@ -267,6 +270,7 @@ async function createVideoTask(payload, config = readBackendConfig()) {
       "Content-Type": "application/json",
       "X-Client-Request-Id": payload.client_request_id
     },
+    signal: options.signal,
     body: JSON.stringify(payload)
   });
   const text = await res.text();
@@ -292,6 +296,198 @@ async function createVideoTask(payload, config = readBackendConfig()) {
   const taskId = extractTaskId(data);
   if (!taskId) throw new Error("后端创建任务响应缺少 task_id");
   return { ...(data || {}), task_id: taskId, backend_mode: config.mode };
+}
+
+// ── Task API / polling -------------------------------------------------
+const TERMINAL_TASK_STATUSES = new Set(["succeeded", "failed", "cancelled", "deleted", "expired", "timeout"]);
+
+function taskStatusLabel(status) {
+  return ({
+    queued: "排队中",
+    running: "生成中",
+    succeeded: "已完成",
+    failed: "生成失败",
+    cancelled: "已取消",
+    deleted: "已删除",
+    expired: "已过期",
+    timeout: "等待超时",
+    auth_error: "鉴权失败",
+    network_error: "网络异常",
+    error: "请求失败"
+  })[status] || status || "未知状态";
+}
+
+function tasksEndpoint(config = readBackendConfig()) {
+  return createEndpoint(config).replace(/\/+$/, "");
+}
+
+function extractVideoUrl(data) {
+  const src = data?.data || data || {};
+  if (typeof src.video_url === "string") return src.video_url;
+  if (typeof src.videoUrl === "string") return src.videoUrl;
+  const content = Array.isArray(src.content) ? src.content : [];
+  for (const item of content) {
+    if (item?.type !== "video_url") continue;
+    if (typeof item.video_url === "string") return item.video_url;
+    if (typeof item.video_url?.url === "string") return item.video_url.url;
+  }
+  return null;
+}
+
+function normalizeTask(data) {
+  const src = data?.data || data || {};
+  const status = String(src.status || data?.status || "queued").toLowerCase();
+  const error = src.error || data?.error || {};
+  const errorMessage =
+    src.error_message || src.errorMessage || src.message || src.status_message ||
+    (typeof error === "string" ? error : error.message || error.msg) || null;
+  const model = src.model;
+  const modelId = typeof model === "object" ? (model.id || model.name) : model;
+  const taskId = src.task_id || src.taskId || src.id || data?.task_id || data?.taskId || data?.id || null;
+  return {
+    taskId,
+    task_id: taskId,
+    status,
+    statusLabel: taskStatusLabel(status),
+    videoUrl: extractVideoUrl(data),
+    video_url: extractVideoUrl(data),
+    errorMessage,
+    error_message: errorMessage,
+    progress: Number.isFinite(src.progress) ? src.progress : null,
+    model: modelId || null,
+    modelLabel: MODELS.find(m => m.id === modelId)?.label || (modelId ? String(modelId).replace(/doubao-seedance-/, "Seedance ").replace(/-\d+$/, "") : null),
+    prompt: src.prompt || (Array.isArray(src.content) ? src.content.find(c => c.type === "text")?.text : null) || null,
+    ratio: src.ratio || src.ar || null,
+    resolution: src.resolution || null,
+    duration: src.duration || null,
+    createdAt: src.created_at || src.createdAt || null,
+    updatedAt: src.updated_at || src.updatedAt || null,
+    raw: data
+  };
+}
+
+async function requestCreateVideoTask(params, { signal, config = readBackendConfig() } = {}) {
+  const validationErrors = validateCreateTaskParams(params, config);
+  if (validationErrors.length) {
+    const err = new Error(validationErrors[0].message);
+    err.field = validationErrors[0].field;
+    throw err;
+  }
+  const payload = buildCreateTaskPayload(params);
+  return normalizeTask(await createVideoTask(payload, config, { signal }));
+}
+
+async function requestTaskStatus(taskId, { signal, config = readBackendConfig() } = {}) {
+  const res = await fetch(`${tasksEndpoint(config)}/${encodeURIComponent(taskId)}`, {
+    headers: { "Accept": "application/json" },
+    signal
+  });
+  const text = await res.text();
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch (_) {}
+  if (!res.ok) {
+    const msg = data?.message || data?.error?.message || text || "查询任务失败";
+    const err = new Error(msg);
+    err.status = res.status;
+    err.code = data?.error?.code;
+    throw err;
+  }
+  return normalizeTask(data);
+}
+
+async function requestListTasks({ pageNum = 1, pageSize = 10, statusFilter, signal, config = readBackendConfig() } = {}) {
+  const params = new URLSearchParams({ page_num: String(pageNum), page_size: String(pageSize) });
+  if (statusFilter && statusFilter !== "all") params.set("status", statusFilter);
+  const res = await fetch(`${tasksEndpoint(config)}?${params}`, {
+    headers: { "Accept": "application/json" },
+    signal
+  });
+  const text = await res.text();
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch (_) {}
+  if (!res.ok) {
+    const msg = data?.message || data?.error?.message || text || "查询任务列表失败";
+    const err = new Error(msg);
+    err.status = res.status;
+    err.code = data?.error?.code;
+    throw err;
+  }
+  return normalizeListResult(data, pageNum, pageSize);
+}
+
+function normalizeListResult(data, pageNum, pageSize) {
+  const src = data?.data || data || {};
+  const itemsRaw = Array.isArray(src.items) ? src.items : Array.isArray(src.data) ? src.data : [];
+  const total = typeof src.total === "number" ? src.total : Number(src.total) || itemsRaw.length;
+  return {
+    items: itemsRaw.map(normalizeTask),
+    total,
+    pageNum,
+    pageSize,
+    hasMore: src.has_more ?? (pageNum * pageSize < total)
+  };
+}
+
+function classifyTaskError(err) {
+  if (err?.name === "AbortError") return null;
+  if (err?.status === 401 || err?.status === 403) return { status: "auth_error", errorMessage: "后端鉴权失败，请检查服务端 ARK_API_KEY。" };
+  if (err?.status) return { status: "error", errorMessage: err.message || "后端返回错误，请稍后重试。" };
+  return { status: "network_error", errorMessage: "网络请求失败，请检查连接后重试。" };
+}
+
+function nodePatchFromTask(task) {
+  const status = task.status;
+  const videoUrl = task.videoUrl || task.video_url || null;
+  const errorMessage = task.errorMessage || task.error_message || null;
+  if (status === "succeeded") {
+    return { status: "done", taskStatus: status, task_status: status, statusText: task.statusLabel, progress: 100, videoUrl, video_url: videoUrl, errorMessage: null, error_message: null, completedAt: Date.now() };
+  }
+  if (status === "queued" || status === "running") {
+    return { status: "generating", taskStatus: status, task_status: status, statusText: task.statusLabel, progress: task.progress ?? (status === "queued" ? 12 : 55) };
+  }
+  if (status === "cancelled" || status === "deleted") {
+    return { status: "cancelled", taskStatus: status, task_status: status, statusText: task.statusLabel, progress: null, errorMessage: errorMessage || task.statusLabel, error_message: errorMessage || task.statusLabel, completedAt: Date.now() };
+  }
+  return { status: "error", taskStatus: status, task_status: status, statusText: task.statusLabel, progress: null, errorMessage: errorMessage || task.statusLabel, error_message: errorMessage || task.statusLabel, completedAt: Date.now() };
+}
+
+function startTaskPolling({ taskId, signal, config = readBackendConfig(), onUpdate, onDone, timeoutMs = 600000, initialDelay = 1200, maxDelay = 5000 }) {
+  let stopped = false;
+  let timer = null;
+  let delay = initialDelay;
+  const startedAt = Date.now();
+  const stop = () => { stopped = true;if (timer) clearTimeout(timer); };
+  if (signal) signal.addEventListener("abort", stop, { once: true });
+  async function tick() {
+    if (stopped) return;
+    if (Date.now() - startedAt >= timeoutMs) {
+      const timeoutTask = { taskId, status: "timeout", statusLabel: taskStatusLabel("timeout"), errorMessage: "等待时间过长，已停止轮询。可稍后从历史任务恢复。" };
+      onUpdate(timeoutTask);
+      onDone?.(timeoutTask);
+      stop();
+      return;
+    }
+    try {
+      const task = await requestTaskStatus(taskId, { signal, config });
+      if (stopped) return;
+      onUpdate(task);
+      if (TERMINAL_TASK_STATUSES.has(task.status)) {
+        onDone?.(task);
+        stop();
+        return;
+      }
+      delay = Math.min(maxDelay, Math.round(delay * 1.35));
+      timer = setTimeout(tick, delay);
+    } catch (err) {
+      const task = classifyTaskError(err);
+      if (!task || stopped) return;
+      onUpdate({ taskId, status: task.status, statusLabel: taskStatusLabel(task.status), errorMessage: task.errorMessage });
+      onDone?.(task);
+      stop();
+    }
+  }
+  timer = setTimeout(tick, 0);
+  return { stop };
 }
 
 function Pill({ label, on, onClick, disabled }) {
@@ -642,6 +838,9 @@ function DetailPanel({ node, onClose, onPreview, onDownload, onRegen, onDelete }
   if (node.refImages) node.refImages.forEach((r, i) => refs.push({ src: r.url, label: "图片" + (i + 1), kind: "image" }));
   if (node.refVideos) node.refVideos.forEach((r, i) => refs.push({ src: r.url, label: "视频" + (i + 1), kind: "video" }));
   if (node.refAudios) node.refAudios.forEach((r, i) => refs.push({ src: r.url, label: "音频" + (i + 1), kind: "audio" }));
+  const videoUrl = node.video_url || node.videoUrl;
+  const errorMessage = node.error_message || node.errorMessage;
+  const taskStatus = node.task_status || node.taskStatus || node.status;
 
   return (
     <div className="panel">
@@ -653,10 +852,10 @@ function DetailPanel({ node, onClose, onPreview, onDownload, onRegen, onDelete }
       </div>
       <div className="pb">
         {/* Thumbnail / preview */}
-        <div onClick={node.status === "done" ? onPreview : undefined}
-        style={{ borderRadius: 10, overflow: "hidden", background: "#111", aspectRatio: aspectValue(node.ar), display: "flex", alignItems: "center", justifyContent: "center", position: "relative", cursor: node.status === "done" ? "pointer" : "default" }}>
-          {node.status === "done" && node.video_url && !node.video_url.startsWith("blob:") ? (
-            <video src={node.video_url} muted playsInline preload="metadata" style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }} />
+        <div onClick={node.status === "done" && videoUrl ? onPreview : undefined}
+        style={{ borderRadius: 10, overflow: "hidden", background: "#111", aspectRatio: aspectValue(node.ar), display: "flex", alignItems: "center", justifyContent: "center", position: "relative", cursor: node.status === "done" && videoUrl ? "pointer" : "default" }}>
+          {node.status === "done" && videoUrl && !videoUrl.startsWith("blob:") ? (
+            <video src={videoUrl} muted playsInline preload="metadata" style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }} />
           ) : node.status === "done" ? (
             <div style={{ position: "absolute", inset: 0, background: "linear-gradient(135deg,#1a1a2e,#16213e,#0f3460)", display: "flex", alignItems: "center", justifyContent: "center" }}>
               <div style={{ width: 44, height: 44, borderRadius: 22, background: "rgba(255,255,255,.18)", display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -666,15 +865,17 @@ function DetailPanel({ node, onClose, onPreview, onDownload, onRegen, onDelete }
           ) : node.status === "error" ? (
             <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6, padding: 12 }}>
               <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-              <span style={{ color: "#ef4444", fontSize: 11, textAlign: "center" }}>{node.error_message || "生成失败"}</span>
+              <span style={{ color: "#ef4444", fontSize: 11, textAlign: "center" }}>{errorMessage || "生成失败"}</span>
             </div>
+          ) : node.status === "cancelled" ? (
+            <span style={{ color: "rgba(255,255,255,.55)", fontSize: 12 }}>{node.statusText || "已取消"}</span>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
               <div style={{ display: "flex", gap: 5 }}>{[0,1,2].map(i=><div key={i} style={{width:6,height:6,borderRadius:3,background:"rgba(255,255,255,.3)",animation:"blink 1.2s "+(i*0.2)+"s ease-in-out infinite"}}/>)}</div>
               <span style={{ color: "rgba(255,255,255,.4)", fontSize: 11 }}>生成中…</span>
             </div>
           )}
-          {node.status === "done" && node.video_url && (
+          {node.status === "done" && videoUrl && (
             <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
               <div style={{ width: 44, height: 44, borderRadius: 22, background: "rgba(0,0,0,.35)", display: "flex", alignItems: "center", justifyContent: "center" }}>
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="white"><path d="M8 5v14l11-7z" /></svg>
@@ -744,20 +945,31 @@ function DetailPanel({ node, onClose, onPreview, onDownload, onRegen, onDelete }
         </div>
 
         {/* Error message */}
-        {node.error_message && (
+        {errorMessage && (
           <div>
             <div className="fl">错误信息</div>
-            <div style={{ background: "#fef2f2", borderRadius: 8, padding: "9px 11px", fontSize: 12, color: "#dc2626", lineHeight: 1.5 }}>{node.error_message}</div>
+            <div style={{ background: "#fef2f2", borderRadius: 8, padding: "9px 11px", fontSize: 12, color: "#dc2626", lineHeight: 1.5 }}>{errorMessage}</div>
+          </div>
+        )}
+
+        {/* Task status */}
+        {taskStatus && (
+          <div>
+            <div className="fl">任务状态</div>
+            <div style={{ background: "#f7f7f7", borderRadius: 8, padding: "9px 11px", fontSize: 12, color: "#333", lineHeight: 1.5 }}>
+              <b style={{ marginRight: 6 }}>{node.statusText || taskStatusLabel(taskStatus)}</b>
+              {node.taskId && <span style={{ color: "#888", fontVariantNumeric: "tabular-nums" }}>{node.taskId}</span>}
+            </div>
           </div>
         )}
 
         {/* Video URL */}
-        {node.video_url && node.status === "done" && (
+        {videoUrl && node.status === "done" && (
           <div>
             <div className="fl">视频链接</div>
             <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-              <input readOnly value={node.video_url} style={{ flex: 1, fontSize: 11, color: "#555", background: "#f5f5f5", border: "1px solid #e8e8e8", borderRadius: 7, padding: "6px 10px", outline: "none", overflow: "hidden", textOverflow: "ellipsis" }} />
-              <button onClick={() => {navigator.clipboard.writeText(node.video_url).then(()=>alert("已复制"))}} style={{ padding: "6px 10px", borderRadius: 7, border: "1px solid #e5e5e5", background: "#fafafa", fontSize: 11, color: "#666", cursor: "pointer", whiteSpace: "nowrap" }}>复制</button>
+              <input readOnly value={videoUrl} style={{ flex: 1, fontSize: 11, color: "#555", background: "#f5f5f5", border: "1px solid #e8e8e8", borderRadius: 7, padding: "6px 10px", outline: "none", overflow: "hidden", textOverflow: "ellipsis" }} />
+              <button onClick={() => {navigator.clipboard.writeText(videoUrl).then(()=>alert("已复制"))}} style={{ padding: "6px 10px", borderRadius: 7, border: "1px solid #e5e5e5", background: "#fafafa", fontSize: 11, color: "#666", cursor: "pointer", whiteSpace: "nowrap" }}>复制</button>
             </div>
             <div style={{ fontSize: 10, color: "#aaa", marginTop: 4 }}>链接 24 小时内有效，请及时下载</div>
           </div>
@@ -785,7 +997,8 @@ function DetailPanel({ node, onClose, onPreview, onDownload, onRegen, onDelete }
 // ── PreviewModal ─────────────────────────────────────────────────────
 function PreviewModal({ node, onClose }) {
   const [a, b] = FRAME_AR[node.ar] || [16, 9];
-  const isRealVideo = node.video_url && !node.video_url.startsWith("blob:");
+  const videoUrl = node.video_url || node.videoUrl;
+  const isRealVideo = videoUrl && !videoUrl.startsWith("blob:");
   React.useEffect(() => {
     function onKey(e) {if (e.key === "Escape") onClose();}
     window.addEventListener("keydown", onKey);
@@ -795,7 +1008,7 @@ function PreviewModal({ node, onClose }) {
     <div className="modal-bg" onClick={onClose}>
       <div className="modal-frame" style={{ aspectRatio: `${a}/${b}` }} onClick={(e) => e.stopPropagation()}>
         {isRealVideo ? (
-          <video src={node.video_url} controls autoPlay style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "contain", borderRadius: 12, background: "#000" }} />
+          <video src={videoUrl} controls autoPlay style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "contain", borderRadius: 12, background: "#000" }} />
         ) : (
           <div style={{ position: "absolute", inset: 0, background: "linear-gradient(135deg,#1a1a2e,#16213e,#0f3460)", borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center" }}>
             <div style={{ width: 72, height: 72, borderRadius: 36, background: "rgba(255,255,255,0.2)", backdropFilter: "blur(8px)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}>
@@ -1000,6 +1213,204 @@ function AssetsPanel({ onClose, nodes }) {
 
 }
 
+// ── HistoryPanel ──────────────────────────────────────────────────────
+const HISTORY_STATUS_OPTIONS = [
+  ["all", "全部"],
+  ["queued", "排队中"],
+  ["running", "生成中"],
+  ["succeeded", "已完成"],
+  ["failed", "失败"],
+  ["cancelled", "已取消"]
+];
+const HISTORY_STATUS_COLORS = {
+  queued: { bg: "#f3f0ff", fg: "#7c3aed", dot: "#a78bfa" },
+  running: { bg: "#fffbeb", fg: "#b45309", dot: "#f59e0b" },
+  succeeded: { bg: "#ecfdf5", fg: "#047857", dot: "#10b981" },
+  failed: { bg: "#fef2f2", fg: "#b91c1c", dot: "#ef4444" },
+  cancelled: { bg: "#f5f5f5", fg: "#6b7280", dot: "#9ca3af" },
+  deleted: { bg: "#f5f5f5", fg: "#9ca3af", dot: "#d1d5db" }
+};
+
+function fmtRelativeTime(ts) {
+  if (!ts) return "—";
+  const diff = Date.now() - new Date(ts).getTime();
+  if (diff < 60000) return "刚刚";
+  if (diff < 3600000) return Math.floor(diff / 60000) + " 分钟前";
+  if (diff < 86400000) return Math.floor(diff / 3600000) + " 小时前";
+  if (diff < 604800000) return Math.floor(diff / 86400000) + " 天前";
+  return fmtTime(ts);
+}
+
+function HistoryTaskCard({ task, onResume, onViewResult, onSelect }) {
+  const [copied, setCopied] = React.useState(false);
+  const sc = HISTORY_STATUS_COLORS[task.status] || HISTORY_STATUS_COLORS.cancelled;
+  const isPending = task.status === "queued" || task.status === "running";
+  const isDone = task.status === "succeeded" && (task.videoUrl || task.video_url);
+  function handleCopy(e) {
+    e.stopPropagation();
+    navigator.clipboard.writeText(task.taskId).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  }
+  return (
+    <div onClick={() => onSelect?.(task)} style={{ background: "#fff", borderRadius: 12, border: "1px solid #eee", padding: "12px 14px", cursor: "pointer" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "3px 9px", borderRadius: 12, fontSize: 11, fontWeight: 600, background: sc.bg, color: sc.fg }}>
+            <span style={{ width: 6, height: 6, borderRadius: 3, background: sc.dot }} />
+            {task.statusLabel || taskStatusLabel(task.status)}
+          </span>
+          <span style={{ fontSize: 11, color: "#999", fontWeight: 500 }}>{task.modelLabel || "Seedance"}</span>
+        </div>
+        <span style={{ fontSize: 10.5, color: "#bbb", fontVariantNumeric: "tabular-nums" }}>{fmtRelativeTime(task.createdAt)}</span>
+      </div>
+      <div style={{ fontSize: 13, color: "#222", fontWeight: 500, lineHeight: 1.45, marginBottom: 8, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        {task.prompt || "（无提示词）"}
+      </div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+        {[
+          ["ID", (task.taskId || "").slice(0, 12) + "…"],
+          task.ratio && ["比例", task.ratio],
+          task.resolution && ["分辨率", task.resolution],
+          task.duration && ["时长", task.duration + "s"],
+          isDone && ["有结果", "✓"]
+        ].filter(Boolean).map(([k, v]) => (
+          <span key={k} style={{ fontSize: 10, color: "#888", background: "#f7f7f7", borderRadius: 5, padding: "2px 7px", fontVariantNumeric: "tabular-nums" }}>{k}: {v}</span>
+        ))}
+      </div>
+      {(task.errorMessage || task.error_message) && (
+        <div style={{ fontSize: 11.5, color: "#dc2626", background: "#fef2f2", borderRadius: 7, padding: "6px 10px", marginBottom: 10, lineHeight: 1.4 }}>{task.errorMessage || task.error_message}</div>
+      )}
+      <div style={{ display: "flex", gap: 6 }}>
+        <button onClick={handleCopy} style={{ padding: "5px 10px", borderRadius: 7, border: "1px solid #e5e5e5", background: "#fafafa", fontSize: 11, color: "#666", cursor: "pointer" }}>
+          {copied ? "已复制" : "复制 ID"}
+        </button>
+        {isPending && <button onClick={e => { e.stopPropagation(); onResume?.(task); }} style={{ padding: "5px 10px", borderRadius: 7, border: "1px solid #f59e0b", background: "#fffbeb", fontSize: 11, color: "#b45309", cursor: "pointer", fontWeight: 600 }}>恢复轮询</button>}
+        {isDone && <button onClick={e => { e.stopPropagation(); onViewResult?.(task); }} style={{ padding: "5px 10px", borderRadius: 7, border: "none", background: "#111", fontSize: 11, color: "#fff", cursor: "pointer", fontWeight: 600 }}>查看结果</button>}
+      </div>
+    </div>
+  );
+}
+
+function HistoryPanel({ onClose, onResumeTask, onViewResult, backendConfig }) {
+  const { useState: us, useEffect: ue, useMemo: um, useRef: ur } = React;
+  const [statusFilter, setStatusFilter] = us("all");
+  const [page, setPage] = us(1);
+  const [loading, setLoading] = us(false);
+  const [error, setError] = us(null);
+  const [searchQuery, setSearchQuery] = us("");
+  const [listResult, setListResult] = us({ items: [], total: 0 });
+  const [detailTask, setDetailTask] = us(null);
+  const abortRef = ur(null);
+  const pageSize = 10;
+
+  async function fetchList(p = page, status = statusFilter) {
+    if (abortRef.current) abortRef.current.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await requestListTasks({ pageNum: p, pageSize, statusFilter: status, signal: controller.signal, config: backendConfig });
+      if (!controller.signal.aborted) {
+        setListResult(result);
+        setLoading(false);
+      }
+    } catch (err) {
+      if (err?.name === "AbortError") return;
+      if (!controller.signal.aborted) {
+        setError(classifyTaskError(err)?.errorMessage || "加载失败，请重试");
+        setLoading(false);
+      }
+    }
+  }
+
+  ue(() => { fetchList(1, statusFilter); setPage(1); }, [statusFilter]);
+  ue(() => () => { if (abortRef.current) abortRef.current.abort(); }, []);
+
+  const filtered = um(() => {
+    if (!searchQuery.trim()) return listResult.items;
+    const q = searchQuery.trim().toLowerCase();
+    return listResult.items.filter(t => (t.taskId && t.taskId.toLowerCase().includes(q)) || (t.prompt && t.prompt.toLowerCase().includes(q)));
+  }, [listResult.items, searchQuery]);
+  const totalPages = Math.max(1, Math.ceil(listResult.total / pageSize));
+  function handlePageChange(newPage) {
+    setPage(newPage);
+    fetchList(newPage, statusFilter);
+  }
+
+  if (detailTask) {
+    return (
+      <div className="floatp" style={{ width: 380 }}>
+        <div className="fp-hd">
+          <div className="fp-ttl" style={{ cursor: "pointer" }} onClick={() => setDetailTask(null)}>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M15 18l-6-6 6-6"/></svg>
+            <span>任务详情</span>
+          </div>
+          <button className="fp-min" onClick={onClose} title="关闭"><svg width="14" height="2" viewBox="0 0 14 2"><rect width="14" height="2" rx="1" fill="#666"/></svg></button>
+        </div>
+        <div className="fp-bd">
+          <div style={{ marginBottom: 14 }}>
+            <div className="fl">任务 ID</div>
+            <code style={{ display: "block", fontSize: 12, color: "#333", background: "#f5f5f5", padding: "5px 10px", borderRadius: 7, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{detailTask.taskId}</code>
+          </div>
+          <div style={{ marginBottom: 14 }}>
+            <div className="fl">状态</div>
+            {(() => { const sc = HISTORY_STATUS_COLORS[detailTask.status] || HISTORY_STATUS_COLORS.cancelled; return (
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "4px 12px", borderRadius: 14, fontSize: 12, fontWeight: 600, background: sc.bg, color: sc.fg }}>
+                <span style={{ width: 7, height: 7, borderRadius: 4, background: sc.dot }} />
+                {detailTask.statusLabel || taskStatusLabel(detailTask.status)}
+              </span>
+            ); })()}
+          </div>
+          {detailTask.prompt && <div style={{ marginBottom: 14 }}><div className="fl">提示词</div><div style={{ background: "#f7f7f7", borderRadius: 8, padding: "9px 11px", fontSize: 12.5, color: "#333", lineHeight: 1.55 }}>{detailTask.prompt}</div></div>}
+          {(detailTask.errorMessage || detailTask.error_message) && <div style={{ marginBottom: 14 }}><div className="fl">错误信息</div><div style={{ background: "#fef2f2", borderRadius: 8, padding: "9px 11px", fontSize: 12, color: "#dc2626", lineHeight: 1.5 }}>{detailTask.errorMessage || detailTask.error_message}</div></div>}
+          <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+            {(detailTask.status === "queued" || detailTask.status === "running") && <button onClick={() => onResumeTask?.(detailTask)} style={{ flex: 1, padding: "10px 0", borderRadius: 9, border: "none", background: "#f59e0b", fontSize: 13, fontWeight: 600, cursor: "pointer", color: "#fff" }}>恢复轮询</button>}
+            {detailTask.status === "succeeded" && (detailTask.videoUrl || detailTask.video_url) && <button onClick={() => onViewResult?.(detailTask)} style={{ flex: 1, padding: "10px 0", borderRadius: 9, border: "none", background: "#111", fontSize: 13, fontWeight: 600, cursor: "pointer", color: "#fff" }}>查看结果</button>}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="floatp" style={{ width: 400 }}>
+      <div className="fp-hd">
+        <div className="fp-ttl"><span>历史任务</span></div>
+        <button className="fp-min" onClick={onClose} title="关闭"><svg width="14" height="2" viewBox="0 0 14 2"><rect width="14" height="2" rx="1" fill="#666"/></svg></button>
+      </div>
+      <div style={{ padding: "0 18px 10px" }}>
+        <div style={{ display: "flex", alignItems: "center", background: "#fff", border: "1px solid #e2e2e2", borderRadius: 18, padding: "7px 14px", height: 34, boxSizing: "border-box" }}>
+          <input value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="搜索任务 ID 或提示词…" style={{ flex: 1, border: "none", background: "none", outline: "none", fontSize: 13, color: "#222", fontFamily: "inherit" }} />
+        </div>
+      </div>
+      <div style={{ padding: "0 18px 10px", display: "flex", gap: 5, flexWrap: "wrap" }}>
+        {HISTORY_STATUS_OPTIONS.map(([val, label]) => (
+          <button key={val} onClick={() => setStatusFilter(val)} style={{ padding: "4px 11px", borderRadius: 20, fontSize: 11.5, fontWeight: 600, cursor: "pointer", border: statusFilter === val ? "1.5px solid #111" : "1.5px solid #e5e5e5", background: statusFilter === val ? "#111" : "#fff", color: statusFilter === val ? "#fff" : "#777" }}>{label}</button>
+        ))}
+      </div>
+      <div style={{ flex: 1, overflowY: "auto", padding: "0 18px 14px", display: "flex", flexDirection: "column", gap: 10 }}>
+        {loading && <div style={{ padding: 40, textAlign: "center", fontSize: 12, color: "#999" }}>加载中…</div>}
+        {error && !loading && <div style={{ padding: 40, textAlign: "center", fontSize: 12.5, color: "#666" }}>{error}<br/><button onClick={() => fetchList(page)} style={{ marginTop: 10, padding: "6px 14px", borderRadius: 8, border: "1px solid #ddd", background: "#fff", fontSize: 12, cursor: "pointer", color: "#333" }}>重试</button></div>}
+        {!loading && !error && filtered.length === 0 && <div style={{ padding: 40, textAlign: "center", fontSize: 13, color: "#bbb" }}>{searchQuery ? "没有匹配的任务" : "暂无历史任务"}</div>}
+        {!loading && !error && filtered.map(task => <HistoryTaskCard key={task.taskId} task={task} onSelect={setDetailTask} onResume={onResumeTask} onViewResult={onViewResult} />)}
+      </div>
+      {!loading && !error && listResult.total > 0 && (
+        <div style={{ padding: "10px 18px 14px", borderTop: "1px solid #f0f0f0", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <span style={{ fontSize: 11, color: "#999" }}>共 {listResult.total} 条</span>
+          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            <button disabled={page <= 1} onClick={() => handlePageChange(page - 1)} style={{ width: 28, height: 28, borderRadius: 7, border: "1px solid #e5e5e5", background: page <= 1 ? "#f9f9f9" : "#fff", cursor: page <= 1 ? "not-allowed" : "pointer", color: page <= 1 ? "#ccc" : "#666" }}>‹</button>
+            <span style={{ fontSize: 11.5, color: "#666", fontVariantNumeric: "tabular-nums", minWidth: 40, textAlign: "center" }}>{page} / {totalPages}</span>
+            <button disabled={page >= totalPages} onClick={() => handlePageChange(page + 1)} style={{ width: 28, height: 28, borderRadius: 7, border: "1px solid #e5e5e5", background: page >= totalPages ? "#f9f9f9" : "#fff", cursor: page >= totalPages ? "not-allowed" : "pointer", color: page >= totalPages ? "#ccc" : "#666" }}>›</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 Object.assign(window, {
   VNode,
   CreatePanel,
@@ -1007,6 +1418,8 @@ Object.assign(window, {
   PreviewModal,
   AgentPanel,
   AssetsPanel,
+  HistoryPanel,
+  HistoryTaskCard,
   frameSize,
   FRAME_AR,
   readBackendConfig,
@@ -1015,5 +1428,13 @@ Object.assign(window, {
   buildCreateTaskPayload,
   buildAssets,
   createVideoTask,
-  formatCreateError
+  formatCreateError,
+  taskStatusLabel,
+  requestListTasks,
+  requestTaskStatus,
+  requestCreateVideoTask,
+  startTaskPolling,
+  nodePatchFromTask,
+  classifyTaskError,
+  TERMINAL_TASK_STATUSES
 });

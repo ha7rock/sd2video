@@ -287,6 +287,7 @@ function App(){
   const createInFlight=useRef(false);
   const panStart=useRef(null);
   const cvRef=useRef();
+  const pollersRef=useRef({});
   const zoomRef=useRef(zoom);const panRef=useRef(pan);
   useEffect(()=>{zoomRef.current=zoom;},[zoom]);
   useEffect(()=>{panRef.current=pan;},[pan]);
@@ -403,6 +404,36 @@ function App(){
     return()=>{window.removeEventListener("keydown",onKD);window.removeEventListener("keyup",onKU);window.removeEventListener("mouseup",onWinUp);window.removeEventListener("blur",onWinUp);};
   },[selId]);
 
+  function stopPolling(id){
+    pollersRef.current[id]?.stop?.();
+    delete pollersRef.current[id];
+  }
+  function createAndPollTask(id,params){
+    const controller=new AbortController();
+    pollersRef.current[id]={stop:()=>controller.abort()};
+    return window.requestCreateVideoTask(params,{signal:controller.signal,config:backendConfig}).then(task=>{
+      if(controller.signal.aborted)return task;
+      const taskId=task.taskId;
+      setNodes(ns=>ns.map(n=>n.id===id?{...n,...window.nodePatchFromTask(task),taskId:taskId||n.taskId,task_id:taskId||n.task_id,backendMode:backendConfig.mode}:n));
+      if(!taskId||window.TERMINAL_TASK_STATUSES.has(task.status)){stopPolling(id);return task;}
+      const poller=window.startTaskPolling({
+        taskId,
+        config:backendConfig,
+        signal:controller.signal,
+        onUpdate:(next)=>setNodes(ns=>ns.map(n=>n.id===id?{...n,...window.nodePatchFromTask(next),taskId,task_id:taskId}:n)),
+        onDone:()=>stopPolling(id)
+      });
+      pollersRef.current[id]={stop:()=>{poller.stop();controller.abort();}};
+      return task;
+    }).catch(err=>{
+      const task=window.classifyTaskError(err);
+      if(!task)return null;
+      setNodes(ns=>ns.map(n=>n.id===id?{...n,...window.nodePatchFromTask({taskId:n.taskId,status:task.status,statusLabel:window.taskStatusLabel(task.status),errorMessage:task.errorMessage})}:n));
+      stopPolling(id);
+      throw err;
+    });
+  }
+
   async function addNode(params){
     if(createInFlight.current)throw new Error("任务正在提交，请稍候");
     const validationErrors=window.validateCreateTaskParams(params,backendConfig);
@@ -412,27 +443,31 @@ function App(){
       throw err;
     }
     createInFlight.current=true;
-    const payload=window.buildCreateTaskPayload(params);
     try{
-      const created=await window.createVideoTask(payload,backendConfig);
-      const taskId=created.task_id;
       const taskPatch={
         ...params,
         status:"generating",
+        taskStatus:"queued",
+        task_status:"queued",
+        statusText:"提交任务中",
         progress:0,
-        taskId,
-        task_id:taskId,
-        backendMode:created.backend_mode||backendConfig.mode,
-        rawCreate:created,
+        taskId:null,
+        task_id:null,
+        videoUrl:null,
+        video_url:null,
+        errorMessage:null,
+        error_message:null,
+        backendMode:backendConfig.mode,
         createdAt:Date.now()
       };
     if(panel?.nodeId){
       const existing=nodes.find(n=>n.id===panel.nodeId);
       if(existing){
         const id=existing.id;
+        stopPolling(id);
         setNodes(ns=>ns.map(n=>n.id===id?{...n,...taskPatch}:n));
         setSelId(id);setPanel(null);
-        return created;
+        return await createAndPollTask(id,params);
       }
     }
     const id="n"+(Date.now());
@@ -453,35 +488,27 @@ function App(){
     const newNode={id,x:nx,y:ny,...taskPatch};
     setNodes(ns=>[...ns,newNode]);
     setSelId(id);setPanel(null);
-    return created;
+    return await createAndPollTask(id,params);
     }finally{
       createInFlight.current=false;
     }
-  }
-  function simulateGen(id){
-    let p=0;
-    const t=setInterval(()=>{
-      p+=Math.random()*15+5;
-      if(p>=100){clearInterval(t);setNodes(ns=>ns.map(n=>n.id===id?{...n,status:"done",progress:100}:n));}
-      else setNodes(ns=>ns.map(n=>n.id===id?{...n,progress:Math.round(p)}:n));
-    },400);
   }
 
   function onClickNode(id,wasSelected){
     const n=nodes.find(x=>x.id===id);if(!n)return;
     if(!wasSelected){setSelId(id);setPanel(null);return;}
-    if(n.status==="done")setPanel({type:"detail",nodeId:id});
+    if(n.status==="done"||n.taskId||n.status==="error"||n.status==="cancelled")setPanel({type:"detail",nodeId:id});
     else setPanel({type:"create",nodeId:id});
   }
   function onNodeAction(id,act){
     const n=nodes.find(x=>x.id===id);if(!n)return;
     if(act==="preview")setPreview(n);
-    else if(act==="download")alert("下载 "+(n.title||"video")+".mp4 (mock)");
+    else if(act==="download")alert((n.video_url||n.videoUrl)?"请在预览中使用浏览器下载视频":"暂无可下载视频");
     else if(act==="info")setPanel({type:"detail",nodeId:id});
     else if(act==="delete")deleteNode(id);
   }
 
-  function deleteNode(id){setNodes(ns=>ns.filter(n=>n.id!==id));setSelId(null);setPanel(null);}
+  function deleteNode(id){stopPolling(id);setNodes(ns=>ns.filter(n=>n.id!==id));setSelId(null);setPanel(null);}
   function moveNode(id,pos){setNodes(ns=>ns.map(n=>n.id===id?{...n,...pos}:n));}
 
   const tools=[
@@ -489,15 +516,47 @@ function App(){
     {id:"hand",tip:"平移",icon:<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M18 11V8a2 2 0 00-4 0v-1a2 2 0 00-4 0V6a2 2 0 00-4 0v8l-1.5-1.5a2 2 0 00-2.8 2.8L6 19a5 5 0 005 1h3a5 5 0 005-5v-4z"/></svg>},
     {id:"sep"},
     {id:"video",tip:"创建视频",icon:<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M15 10l4.6-2.3A1 1 0 0121 8.7v6.6a1 1 0 01-1.4.9L15 14M3 8a2 2 0 012-2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg>},
+    {id:"history",tip:"历史任务",icon:<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M3 3v5h5"/><path d="M3.05 13A9 9 0 1 0 5 5.3"/><path d="M12 7v5l3 2"/></svg>},
   ];
 
   function onToolClick(id){
     if(id==="video"){setPanel({type:"create"});setTool("cursor");}
+    else if(id==="history"){setPanel({type:"history"});setTool("cursor");}
     else setTool(id);
+  }
+
+  function nodePositionFor(ar="16:9",resolution="720p"){
+    const[w,h]=window.frameSize(ar,resolution);
+    const cx=window.innerWidth/2,cy=window.innerHeight/2;
+    return {x:(cx-pan.x)/zoom-w/2,y:(cy-pan.y)/zoom-h/2};
+  }
+  function canvasNodeFromTask(task,overrides={}){
+    const ar=task.ratio||"16:9";
+    const resolution=task.resolution||"720p";
+    const pos=nodePositionFor(ar,resolution);
+    return {
+      id:"n"+Date.now(),
+      ...pos,
+      mode:"t2v",
+      model:task.model,
+      modelLabel:task.modelLabel||"Seedance",
+      ar,
+      ratio:ar,
+      resolution,
+      duration:task.duration||5,
+      prompt:task.prompt||"",
+      createdAt:Date.now(),
+      taskId:task.taskId,
+      task_id:task.taskId,
+      backendMode:backendConfig.mode,
+      ...window.nodePatchFromTask(task),
+      ...overrides
+    };
   }
 
   const cursor=handMode?(panActive?"grabbing":"grab"):"default";
   useEffect(()=>{document.body.style.cursor=handMode?(panActive?"grabbing":"grab"):"";return()=>{document.body.style.cursor="";};},[handMode,panActive]);
+  useEffect(()=>()=>{Object.keys(pollersRef.current).forEach(stopPolling);},[]);
 
   return(
     <div style={{width:"100vw",height:"100vh",position:"relative",overflow:"hidden",cursor}}>
@@ -593,6 +652,30 @@ function App(){
       );})()}
       {panel?.type==="agent"&&<AgentPanel onClose={()=>setPanel(null)} nodes={nodes}/>}
       {panel?.type==="assets"&&<AssetsPanel onClose={()=>setPanel(null)} nodes={nodes}/>}
+      {panel?.type==="history"&&<HistoryPanel
+        backendConfig={backendConfig}
+        onClose={()=>setPanel(null)}
+        onResumeTask={(task)=>{
+          const node=canvasNodeFromTask(task,{status:"generating"});
+          setNodes(ns=>[...ns,node]);
+          setSelId(node.id);setPanel(null);
+          const controller=new AbortController();
+          pollersRef.current[node.id]={stop:()=>controller.abort()};
+          const poller=window.startTaskPolling({
+            taskId:task.taskId,
+            config:backendConfig,
+            signal:controller.signal,
+            onUpdate:(next)=>setNodes(ns=>ns.map(n=>n.id===node.id?{...n,...window.nodePatchFromTask(next),taskId:task.taskId,task_id:task.taskId}:n)),
+            onDone:()=>stopPolling(node.id)
+          });
+          pollersRef.current[node.id]={stop:()=>{poller.stop();controller.abort();}};
+        }}
+        onViewResult={(task)=>{
+          const node=canvasNodeFromTask(task,{status:"done",progress:100});
+          setNodes(ns=>[...ns,node]);
+          setSelId(node.id);setPanel({type:"detail",nodeId:node.id});
+        }}
+      />}
       {preview&&<PreviewModal node={preview} onClose={()=>setPreview(null)}/>}
     </div>
   );
