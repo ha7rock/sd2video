@@ -196,6 +196,13 @@ function buildContent({ mode, prompt, startImg, endImg, refImages, refVideos, re
 }
 
 const PANEL_POS_KEY = "sd2video:create-panel-position";
+const PANEL_WIDTH_KEY = "sd2video:create-panel-width";
+const PANEL_TAREF_HEIGHT_KEY = "sd2video:prompt-textarea-height";
+const PANEL_DEFAULT_WIDTH = 310;
+const PANEL_MAX_WIDTH = 620;
+const PANEL_MIN_WIDTH = 310;
+const PANEL_TAREF_DEFAULT_HEIGHT = 78;
+
 function defaultPanelPos() {
   return {
     x: typeof window === "undefined" ? 16 : Math.max(16, window.innerWidth - 326),
@@ -220,6 +227,30 @@ function readPanelPos() {
 function savePanelPos(pos) {
   if (typeof window === "undefined") return;
   try { window.localStorage.setItem(PANEL_POS_KEY, JSON.stringify(pos)); } catch (_) {}
+}
+function readPanelWidth() {
+  if (typeof window === "undefined") return PANEL_DEFAULT_WIDTH;
+  try {
+    const w = Number(window.localStorage.getItem(PANEL_WIDTH_KEY));
+    if (Number.isFinite(w) && w >= PANEL_MIN_WIDTH && w <= PANEL_MAX_WIDTH) return w;
+  } catch (_) {}
+  return PANEL_DEFAULT_WIDTH;
+}
+function savePanelWidth(w) {
+  if (typeof window === "undefined") return;
+  try { window.localStorage.setItem(PANEL_WIDTH_KEY, String(w)); } catch (_) {}
+}
+function readTextareaHeight() {
+  if (typeof window === "undefined") return PANEL_TAREF_DEFAULT_HEIGHT;
+  try {
+    const h = Number(window.localStorage.getItem(PANEL_TAREF_HEIGHT_KEY));
+    if (Number.isFinite(h) && h >= 40) return h;
+  } catch (_) {}
+  return PANEL_TAREF_DEFAULT_HEIGHT;
+}
+function saveTextareaHeight(h) {
+  if (typeof window === "undefined") return;
+  try { window.localStorage.setItem(PANEL_TAREF_HEIGHT_KEY, String(h)); } catch (_) {}
 }
 
 // ── CreatePanel ──────────────────────────────────────────────────────
@@ -247,6 +278,59 @@ function CreatePanel({ node, onClose, onGenerate }) {
   const [webSearch, setWebSearch] = us(!!node?.webSearch || !!node?.tools?.some((t) => t.type === "web_search"));
   const sRef = ur(),eRef = ur(),dragRef = ur(null);
   const [panelPos, setPanelPos] = us(readPanelPos);
+  const [panelWidth, setPanelWidth] = us(readPanelWidth);
+  const [promptHeight, setPromptHeight] = us(readTextareaHeight);
+  const resizeHandleRef = ur(null);
+  const taRef = ur(null);
+  const negTaRef = ur(null);
+
+  // Check if mobile / narrow screen
+  const [isNarrow, setIsNarrow] = us(typeof window !== "undefined" && window.innerWidth < 640);
+  ue(() => {
+    function check() { setIsNarrow(window.innerWidth < 640); }
+    window.addEventListener("resize", check);
+    return () => window.removeEventListener("resize", check);
+  }, []);
+
+  // Width resize via left-edge handle
+  function startWidthResize(e) {
+    if (e.button !== 0 || isNarrow) return;
+    e.preventDefault();
+    const sx = e.clientX;
+    const startW = panelWidth;
+    function move(ev) {
+      const dx = sx - ev.clientX;
+      const next = Math.max(PANEL_MIN_WIDTH, Math.min(PANEL_MAX_WIDTH, startW + dx));
+      setPanelWidth(next);
+      savePanelWidth(next);
+    }
+    function up() {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+    }
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  }
+
+  // Track textarea resize to persist height
+  function onTaResize() {
+    const el = taRef.current;
+    if (el) {
+      const h = el.offsetHeight;
+      if (h !== promptHeight && h > 40) {
+        setPromptHeight(h);
+        saveTextareaHeight(h);
+      }
+    }
+  }
+
+  // Reset panel width and textarea height to defaults
+  function resetPanelSize() {
+    setPanelWidth(PANEL_DEFAULT_WIDTH);
+    savePanelWidth(PANEL_DEFAULT_WIDTH);
+    setPromptHeight(PANEL_TAREF_DEFAULT_HEIGHT);
+    saveTextareaHeight(PANEL_TAREF_DEFAULT_HEIGHT);
+  }
 
   const selectedModel = MODELS.find((m) => m.id === model) || MODELS[0];
   const isFast = selectedModel.maxResolution === "720p";
@@ -300,7 +384,14 @@ function CreatePanel({ node, onClose, onGenerate }) {
   }
 
   return (
-    <div ref={dragRef} className="panel" style={{ left: panelPos.x, top: panelPos.y, right: "auto" }}>
+    <div ref={dragRef} className="panel" style={{ left: panelPos.x, top: panelPos.y, right: "auto", width: panelWidth }}>
+      {/* Left-edge resize handle for width adjustment */}
+      {!isNarrow && (
+        <div ref={resizeHandleRef} onMouseDown={startWidthResize} style={{
+          position: "absolute", left: -3, top: 0, bottom: 0, width: 6,
+          cursor: "col-resize", zIndex: 10, userSelect: "none",
+        }} onDoubleClick={resetPanelSize} title="拖拽调整宽度 · 双击重置" />
+      )}
       <div className="ph ph-drag" onMouseDown={startDrag}>
         <div><div className="pt">生成视频</div><div className="ps">Seedance · 火山方舟</div></div>
         <button className="pc" onMouseDown={(e) => e.stopPropagation()} onClick={onClose}>
@@ -365,7 +456,10 @@ function CreatePanel({ node, onClose, onGenerate }) {
         {/* prompt */}
         <div>
           <div className="fl">提示词</div>
-          <textarea className="ta" value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="描述你想生成的视频内容…" />
+          <textarea ref={taRef} className="ta" value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="描述你想生成的视频内容…"
+            style={{ minHeight: promptHeight, height: promptHeight, resize: "vertical" }}
+            onMouseUp={onTaResize}
+          />
           <div onClick={() => setShowNeg((v) => !v)} style={{ fontSize: 11, color: "#bbb", cursor: "pointer", marginTop: 5, display: "flex", alignItems: "center", gap: 3 }}>
             <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d={showNeg ? "M18 15l-6-6-6 6" : "M6 9l6 6 6-6"} /></svg>
             {showNeg ? "收起" : "添加负向提示词"}
@@ -1178,4 +1272,4 @@ function HistoryPanel({ onClose, onResumeTask, onViewResult }) {
   );
 }
 
-Object.assign(window, { VNode, CreatePanel, DetailPanel, PreviewModal, AgentPanel, AssetsPanel, HistoryPanel, HistoryTaskCard, HISTORY_STATUS_OPTIONS, HISTORY_STATUS_COLORS, frameSize, FRAME_AR });
+Object.assign(window, { VNode, CreatePanel, DetailPanel, PreviewModal, AgentPanel, AssetsPanel, HistoryPanel, HistoryTaskCard, HISTORY_STATUS_OPTIONS, HISTORY_STATUS_COLORS, frameSize, FRAME_AR, PANEL_DEFAULT_WIDTH, PANEL_MAX_WIDTH, PANEL_MIN_WIDTH, readPanelWidth, savePanelWidth, readTextareaHeight, saveTextareaHeight });

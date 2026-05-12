@@ -132,7 +132,7 @@ input,textarea,button,select{font-family:inherit}
 .modal-x{position:fixed;top:20px;right:24px;width:36px;height:36px;border-radius:18px;background:rgba(255,255,255,.12);border:none;color:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(6px);transition:background .15s}
 .modal-x:hover{background:rgba(255,255,255,.22)}
 
-.panel{position:fixed;top:56px;right:16px;width:310px;max-height:calc(100vh - 72px);background:#fff;border-radius:16px;box-shadow:0 8px 40px rgba(0,0,0,.12),0 0 0 1px rgba(0,0,0,.06);z-index:100;overflow:hidden;animation:pin .18s ease;display:flex;flex-direction:column}
+.panel{position:fixed;top:56px;right:16px;max-width:620px;max-height:calc(100vh - 72px);background:#fff;border-radius:16px;box-shadow:0 8px 40px rgba(0,0,0,.12),0 0 0 1px rgba(0,0,0,.06);z-index:100;overflow:hidden;animation:pin .18s ease;display:flex;flex-direction:column}
 @keyframes pin{from{opacity:0;transform:translateY(-6px) scale(.98)}to{opacity:1;transform:none}}
 .ph{padding:13px 16px 10px;border-bottom:1px solid #f0f0f0;display:flex;align-items:flex-start;justify-content:space-between}
 .ph-drag{cursor:move;user-select:none}
@@ -154,7 +154,7 @@ input,textarea,button,select{font-family:inherit}
 .pill.on{border-color:#111;background:#111;color:#fff}
 .pill:hover:not(.on){border-color:#bbb}
 .pill.off{opacity:.35;cursor:not-allowed;text-decoration:line-through}
-.ta{width:100%;min-height:78px;padding:10px 12px;font-size:13px;line-height:1.5;border:1.5px solid #eee;border-radius:10px;background:#fafafa;resize:none;outline:none;color:#222;transition:border-color .15s}
+.ta{width:100%;min-height:78px;padding:10px 12px;font-size:13px;line-height:1.5;border:1.5px solid #eee;border-radius:10px;background:#fafafa;resize:vertical;outline:none;color:#222;transition:border-color .15s}
 .ta:focus{border-color:#aaa;background:#fff}
 .ta::placeholder{color:#bbb}
 .imgslot{flex:1;height:70px;border-radius:10px;border:1.5px dashed #ddd;background:#f8f8f8;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;cursor:pointer;position:relative;overflow:hidden}

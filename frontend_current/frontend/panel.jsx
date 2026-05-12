@@ -61,6 +61,13 @@ function ImageSlot({ label, src, onUpload }) {
 }
 
 const PANEL_POS_KEY = "sd2video:create-panel-position";
+const PANEL_WIDTH_KEY = "sd2video:create-panel-width";
+const PANEL_TAREF_HEIGHT_KEY = "sd2video:prompt-textarea-height";
+const PANEL_DEFAULT_WIDTH = 310;
+const PANEL_MAX_WIDTH = 620;
+const PANEL_MIN_WIDTH = 310;
+const PANEL_TAREF_DEFAULT_HEIGHT = 80;
+
 function defaultPanelPos() {
   return {
     x: typeof window === "undefined" ? 16 : Math.max(16, window.innerWidth - 326),
@@ -86,6 +93,30 @@ function savePanelPos(pos) {
   if (typeof window === "undefined") return;
   try { window.localStorage.setItem(PANEL_POS_KEY, JSON.stringify(pos)); } catch (_) {}
 }
+function readPanelWidth() {
+  if (typeof window === "undefined") return PANEL_DEFAULT_WIDTH;
+  try {
+    const w = Number(window.localStorage.getItem(PANEL_WIDTH_KEY));
+    if (Number.isFinite(w) && w >= PANEL_MIN_WIDTH && w <= PANEL_MAX_WIDTH) return w;
+  } catch (_) {}
+  return PANEL_DEFAULT_WIDTH;
+}
+function savePanelWidth(w) {
+  if (typeof window === "undefined") return;
+  try { window.localStorage.setItem(PANEL_WIDTH_KEY, String(w)); } catch (_) {}
+}
+function readTextareaHeight() {
+  if (typeof window === "undefined") return PANEL_TAREF_DEFAULT_HEIGHT;
+  try {
+    const h = Number(window.localStorage.getItem(PANEL_TAREF_HEIGHT_KEY));
+    if (Number.isFinite(h) && h >= 40) return h;
+  } catch (_) {}
+  return PANEL_TAREF_DEFAULT_HEIGHT;
+}
+function saveTextareaHeight(h) {
+  if (typeof window === "undefined") return;
+  try { window.localStorage.setItem(PANEL_TAREF_HEIGHT_KEY, String(h)); } catch (_) {}
+}
 
 function CreateVideoPanel({ node, onClose, onGenerate, onNodeUpdate }) {
   const { useState: us, useEffect: ue, useRef: ur } = React;
@@ -107,6 +138,57 @@ function CreateVideoPanel({ node, onClose, onGenerate, onNodeUpdate }) {
   const [webSearch, setWS]      = us(!!node?.tools?.some(t => t.type === "web_search"));
   const panelRef = ur(null);
   const [panelPos, setPanelPos] = us(readPanelPos);
+  const [panelWidth, setPanelWidth] = us(readPanelWidth);
+  const [promptHeight, setPromptHeight] = us(readTextareaHeight);
+  const taRef = ur(null);
+
+  // Check if mobile / narrow screen
+  const [isNarrow, setIsNarrow] = us(typeof window !== "undefined" && window.innerWidth < 640);
+  ue(() => {
+    function check() { setIsNarrow(window.innerWidth < 640); }
+    window.addEventListener("resize", check);
+    return () => window.removeEventListener("resize", check);
+  }, []);
+
+  // Width resize via left-edge handle
+  function startWidthResize(e) {
+    if (e.button !== 0 || isNarrow) return;
+    e.preventDefault();
+    const sx = e.clientX;
+    const startW = panelWidth;
+    function move(ev) {
+      const dx = sx - ev.clientX;
+      const next = Math.max(PANEL_MIN_WIDTH, Math.min(PANEL_MAX_WIDTH, startW + dx));
+      setPanelWidth(next);
+      savePanelWidth(next);
+    }
+    function up() {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+    }
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  }
+
+  // Track textarea resize to persist height
+  function onTaResize() {
+    const el = taRef.current;
+    if (el) {
+      const h = el.offsetHeight;
+      if (h !== promptHeight && h > 40) {
+        setPromptHeight(h);
+        saveTextareaHeight(h);
+      }
+    }
+  }
+
+  // Reset panel width and textarea height to defaults
+  function resetPanelSize() {
+    setPanelWidth(PANEL_DEFAULT_WIDTH);
+    savePanelWidth(PANEL_DEFAULT_WIDTH);
+    setPromptHeight(PANEL_TAREF_DEFAULT_HEIGHT);
+    saveTextareaHeight(PANEL_TAREF_DEFAULT_HEIGHT);
+  }
 
   const selectedModel = MODELS.find(m => m.id === model) || MODELS[0];
   const isFast = selectedModel.maxResolution === "720p";
@@ -163,12 +245,18 @@ function CreateVideoPanel({ node, onClose, onGenerate, onNodeUpdate }) {
 
   return (
     <div ref={panelRef} style={{
-      position:"fixed", top:panelPos.y, left:panelPos.x, width:310, maxHeight:"calc(100vh - 72px)",
+      position:"fixed", top:panelPos.y, left:panelPos.x, width:panelWidth, maxHeight:"calc(100vh - 72px)",
       background:"#fff", borderRadius:16,
       boxShadow:"0 8px 40px rgba(0,0,0,0.12), 0 0 0 1px rgba(0,0,0,.06)",
       zIndex:100, overflow:"hidden", display:"flex", flexDirection:"column",
       fontFamily:"-apple-system,'SF Pro Text',sans-serif",
     }}>
+      {/* Left-edge resize handle for width adjustment */}
+      {!isNarrow && (
+        <div onMouseDown={startWidthResize} onDoubleClick={resetPanelSize} title="拖拽调整宽度 · 双击重置"
+          style={{ position:"absolute", left:-3, top:0, bottom:0, width:6, cursor:"col-resize", zIndex:10, userSelect:"none" }}
+        />
+      )}
       {/* Header */}
       <div onMouseDown={startDrag} style={{ padding:"14px 16px 10px", borderBottom:"1px solid #f0f0f0", display:"flex", alignItems:"flex-start", justifyContent:"space-between", cursor:"move", userSelect:"none" }}>
         <div>
@@ -221,12 +309,13 @@ function CreateVideoPanel({ node, onClose, onGenerate, onNodeUpdate }) {
         {/* Prompt */}
         <div>
           <FieldLabel>提示词</FieldLabel>
-          <textarea value={prompt} onChange={e => setPrompt(e.target.value)}
+          <textarea ref={taRef} value={prompt} onChange={e => setPrompt(e.target.value)}
             placeholder="描述你想生成的视频内容…"
+            onMouseUp={onTaResize}
             style={{
-              width:"100%", minHeight:80, padding:"10px 12px", fontSize:13, lineHeight:1.5,
+              width:"100%", minHeight:promptHeight, height:promptHeight, padding:"10px 12px", fontSize:13, lineHeight:1.5,
               border:"1.5px solid #eee", borderRadius:10, background:"#fafafa",
-              resize:"none", outline:"none", color:"#222", fontFamily:"inherit",
+              resize:"vertical", outline:"none", color:"#222", fontFamily:"inherit",
               transition:"border-color .15s",
             }}
             onFocus={e => e.target.style.borderColor="#aaa"}
@@ -337,4 +426,4 @@ function CreateVideoPanel({ node, onClose, onGenerate, onNodeUpdate }) {
   );
 }
 
-Object.assign(window, { CreateVideoPanel, MODELS, MODES, ASPECT_RATIOS, RESOLUTIONS });
+Object.assign(window, { CreateVideoPanel, MODELS, MODES, ASPECT_RATIOS, RESOLUTIONS, PANEL_DEFAULT_WIDTH, PANEL_MAX_WIDTH, PANEL_MIN_WIDTH, readPanelWidth, savePanelWidth, readTextareaHeight, saveTextareaHeight });
