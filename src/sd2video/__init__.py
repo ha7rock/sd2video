@@ -5,11 +5,15 @@ from .ark import (
     ArkConfig,
     ArkTaskDetail,
     ArkTaskListResult,
+    AssetValidationConfig,
     CreateTaskRequest,
+    MediaResolver,
+    ResolvedAsset,
     TaskState,
     VideoGenerationWorkflow,
     WorkflowCallbacks,
     WorkflowConfig,
+    build_task_request_from_payload,
 )
 
 __all__ = [
@@ -17,9 +21,13 @@ __all__ = [
     "ArkConfig",
     "ArkTaskDetail",
     "ArkTaskListResult",
+    "AssetValidationConfig",
     "CreateTaskRequest",
+    "MediaResolver",
+    "ResolvedAsset",
     "TaskState",
     "VideoGenerationWorkflow",
     "WorkflowCallbacks",
     "WorkflowConfig",
+    "build_task_request_from_payload",
 ]

@@ -11,6 +11,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from .assets import MediaResolver, build_task_request_from_payload
 from .client import ArkClient
 from .errors import ArkError, ArkParameterError
 from .task_models import CreateTaskRequest
@@ -242,6 +243,33 @@ class VideoGenerationWorkflow:
             task_id=task_id,
             status="queued",
             model=effective_model,
+        )
+        self._tasks[task_id] = state
+
+        cb = self._callbacks.on_task_created
+        if cb:
+            cb(task_id)
+
+        return state
+
+    def submit_payload(
+        self,
+        payload: dict[str, Any],
+        *,
+        resolver: MediaResolver | None = None,
+    ) -> TaskState:
+        """Submit a HOM-23 frontend payload after backend asset validation."""
+
+        request = build_task_request_from_payload(
+            payload,
+            resolver=resolver,
+            default_model=self._config.default_model or self._client.config.default_model_id,
+        )
+        task_id = self._client.create_task(request)
+        state = TaskState(
+            task_id=task_id,
+            status="queued",
+            model=request.model,
         )
         self._tasks[task_id] = state
 

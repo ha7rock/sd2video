@@ -12,6 +12,13 @@ from .errors import (
     ArkTaskDeleteError,
     ArkTimeoutError,
 )
+from .assets import (
+    AssetValidationConfig,
+    MediaResolver,
+    ResolvedAsset,
+    build_ark_content,
+    build_task_request_from_payload,
+)
 from .task_models import CreateTaskRequest, image_content, text_content
 from .transport import ArkTransport, UrllibArkTransport
 from .types import (
@@ -43,12 +50,17 @@ __all__ = [
     "ArkTaskDeleteError",
     "ArkTimeoutError",
     "ArkTransport",
+    "AssetValidationConfig",
     "CreateTaskRequest",
+    "MediaResolver",
+    "ResolvedAsset",
     "TaskState",
     "UrllibArkTransport",
     "VideoGenerationWorkflow",
     "WorkflowCallbacks",
     "WorkflowConfig",
+    "build_ark_content",
+    "build_task_request_from_payload",
     "image_content",
     "text_content",
 ]
