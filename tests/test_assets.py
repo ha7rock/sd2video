@@ -82,6 +82,19 @@ class AssetPayloadTests(unittest.TestCase):
         self.assertEqual("last_frame", body["content"][2]["role"])
         self.assertEqual("asset://last-asset", body["content"][2]["image_url"]["url"])
 
+    def test_image_data_url_payload(self) -> None:
+        req = build_task_request_from_payload({
+            "mode": "first_frame",
+            "model": "doubao-seedance-2-0",
+            "assets": {
+                "first_frame": "data:image/png;base64,iVBORw0KGgo=",
+            },
+        })
+
+        body = req.build()
+        self.assertEqual("first_frame", body["content"][0]["role"])
+        self.assertEqual("data:image/png;base64,iVBORw0KGgo=", body["content"][0]["image_url"]["url"])
+
     def test_reference_payload_with_all_media_types(self) -> None:
         req = build_task_request_from_payload({
             "mode": "reference",

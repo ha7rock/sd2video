@@ -14,6 +14,7 @@
 | 远程 URL | `https://cdn.example.com/a.png` | 校验 scheme、角色、数量、大小/尺寸元数据后直接用于 Ark content。 |
 | 已上传资产 | `asset://019...` | 视为后端已托管或 Ark 可识别资产，校验 ID 非空后使用。 |
 | 本地文件上传 | 先 `POST /api/v1/assets`，任务只提交返回的 `asset://...` 或 URL | 后端校验文件类型/大小/尺寸/时长，上传到对象存储或临时静态服务后返回可访问 URL/ID。 |
+| 本地图片 fallback | `data:image/<fmt>;base64,...` | 当前端无法访问上传接口时，仅图片可转为 data URL 后提交；后端仍会校验大小和格式。视频/音频没有 fallback，必须上传。 |
 | 已生成任务复用 | `{ "task_id": "cgt-...", "result_url": "https://..." }` 或保存成 `asset://...` | 后端校验 result URL 或资产 ID；复用任务 ID 只作为审计/展示元数据。 |
 | 图片 data URI | `data:image/png;base64,...` | 仅图片允许；后端校验 base64 与大小上限。 |
 

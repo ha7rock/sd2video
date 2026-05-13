@@ -56,6 +56,28 @@ function assetReady(asset) {
   if (typeof asset === "string") return !asset.startsWith("blob:");
   return asset.status === "ready" && !!backendAssetUrl(asset);
 }
+function fallbackImageDataUrl(draft, message, setAsset) {
+  if (!draft.file) {
+    setAsset(current => current?.id === draft.id ? { ...current, status:"error", error:message, progress:0 } : current);
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = () => {
+    const url = String(reader.result || "");
+    setAsset(current => current?.id === draft.id ? {
+      ...current,
+      file:null,
+      url,
+      asset_url:url,
+      status:url.startsWith("data:image/") ? "ready" : "error",
+      error:url.startsWith("data:image/") ? null : "图片转换失败，请重试上传",
+      progress:url.startsWith("data:image/") ? 100 : 0,
+      fallback:"data_image"
+    } : current);
+  };
+  reader.onerror = () => setAsset(current => current?.id === draft.id ? { ...current, status:"error", error:message, progress:0 } : current);
+  reader.readAsDataURL(draft.file);
+}
 function uploadSingleAsset(file, role, setAsset) {
   const draft = {
     id: `asset-${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -78,14 +100,14 @@ function uploadSingleAsset(file, role, setAsset) {
   xhr.onload = () => {
     if (xhr.status < 200 || xhr.status >= 300) {
       const message = xhr.response?.error?.message || `上传失败 (${xhr.status})`;
-      setAsset(current => current?.id === draft.id ? { ...current, status:"error", error:message, progress:0 } : current);
+      fallbackImageDataUrl(draft, message, setAsset);
       return;
     }
     const body = xhr.response?.asset || xhr.response || {};
     const url = body.asset_url || body.url;
     setAsset(current => current?.id === draft.id ? { ...current, file:null, url, asset_url:url, preview_url:body.preview_url || current.previewUrl, status:url ? "ready" : "error", error:url ? null : "上传响应缺少 asset_url", progress:url ? 100 : 0 } : current);
   };
-  xhr.onerror = () => setAsset(current => current?.id === draft.id ? { ...current, status:"error", error:"网络错误，上传失败", progress:0 } : current);
+  xhr.onerror = () => fallbackImageDataUrl(draft, "网络错误，上传失败", setAsset);
   const form = new FormData();
   form.append("file", file);
   form.append("kind", "image");

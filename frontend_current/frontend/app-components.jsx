@@ -184,6 +184,31 @@ function normalizeAssetResponse(data, fallback) {
     error: null
   };
 }
+function fallbackImageDataUrl(draft, patch, uploadMessage) {
+  if (draft.kind !== "image" || !draft.file) {
+    patch({ status: "error", error: uploadMessage, progress: 0 });
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = () => {
+    const url = String(reader.result || "");
+    if (!url.startsWith("data:image/")) {
+      patch({ status: "error", error: "图片转换失败，请重试上传", progress: 0 });
+      return;
+    }
+    patch({
+      file: null,
+      url,
+      asset_url: url,
+      status: "ready",
+      progress: 100,
+      error: null,
+      fallback: "data_image"
+    });
+  };
+  reader.onerror = () => patch({ status: "error", error: uploadMessage, progress: 0 });
+  reader.readAsDataURL(draft.file);
+}
 function uploadAsset(draft, patch) {
   patch({ status: "uploading", progress: 1, error: null });
   const xhr = new XMLHttpRequest();
@@ -196,7 +221,7 @@ function uploadAsset(draft, patch) {
     const ok = xhr.status >= 200 && xhr.status < 300;
     if (!ok) {
       const message = xhr.response?.error?.message || `上传失败 (${xhr.status})`;
-      patch({ status: "error", error: message, progress: 0 });
+      fallbackImageDataUrl(draft, patch, message);
       return;
     }
     try {
@@ -205,7 +230,7 @@ function uploadAsset(draft, patch) {
       patch({ status: "error", error: err.message || "上传响应无效", progress: 0 });
     }
   };
-  xhr.onerror = () => patch({ status: "error", error: "网络错误，上传失败", progress: 0 });
+  xhr.onerror = () => fallbackImageDataUrl(draft, patch, "网络错误，上传失败");
   const form = new FormData();
   form.append("file", draft.file);
   form.append("kind", draft.kind);
